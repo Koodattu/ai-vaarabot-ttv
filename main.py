@@ -50,12 +50,15 @@ Personality:
 
 Rules:
 - Keep responses SHORT - under 100 characters when possible, max 400
+- Just go straight to the point, do not start explaining things
+- If the user's question is too open ended, ask to be more specific and exact
 - Users message you as "Username: message" - address them by name when natural
 - Use emojis when fitting to add personality, but don't over use them
 - Match the user's energy and language
 - Detect and respond in the user's language (default: English)
 - You're in PUBLIC chat - keep it appropriate, no NSFW or harmful content
 - Don't be preachy or lecture people
+- Do not markdown bold text
 - It's okay to be cheeky, not okay to be offensive"""
 
 # Store conversation history per user
@@ -179,13 +182,18 @@ def get_gemini_response(user_id: str, user_name: str, message: str) -> str:
             parts=[types.Part(text=f"{user_name}: {message}")]
         ))
 
+        # Grounding tools for up-to-date information
+        google_search_tool = types.Tool(google_search=types.GoogleSearch())
+        google_maps_tool = types.Tool(google_maps=types.GoogleMaps())
+
         response = client.models.generate_content(
             model=GEMINI_MODEL,
             contents=contents,
             config=types.GenerateContentConfig(
                 system_instruction=SYSTEM_PROMPT,
                 max_output_tokens=150,
-                temperature=0.7
+                temperature=0.7,
+                tools=[google_search_tool, google_maps_tool]
             )
         )
 
