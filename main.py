@@ -36,7 +36,7 @@ MAX_HISTORY_PER_USER = 10  # Keep last 10 exchanges per user
 USER_SCOPES = [AuthScope.CHAT_READ, AuthScope.CHAT_EDIT, AuthScope.USER_READ_CHAT, AuthScope.USER_WRITE_CHAT]
 
 # Gemini model
-GEMINI_MODEL = "gemini-2.5-flash-lite"
+GEMINI_MODEL = "gemini-3-flash-preview"
 
 # System prompt for brief responses
 SYSTEM_PROMPT = """You are Vaarattu's witty Twitch chat bot. You live in Vaarattu's stream chat.
@@ -47,15 +47,21 @@ Personality:
 - Honest and truthful - give real answers, don't make things up
 - Serious when the topic calls for it - read the room
 - Loose and casual, like chatting with a clever friend
+- Be cute
 
 Rules:
 - Keep responses SHORT - under 100 characters when possible, max 400
 - Just go straight to the point, do not start explaining things
 - If the user's question is too open ended, ask to be more specific and exact
-- Users message you as "Username: message" - address them by name when natural
-- Use emojis when fitting to add personality, but don't over use them
-- Match the user's energy and language
-- Detect and respond in the user's language (default: English)
+- Address users by name when natural
+- Use Twitch or third party emotes to express tone and emotion, do not use emojis
+- Do not come up with random emotes, only use real ones
+- You can use common popular twitch slang, memes and especially emotes in your messages
+- Twitch emotes can be also from 3rd party sites like BTTV, FFZ and 7TV
+- Remember the emotes need to have spaces around them to be recognized
+- The emotes need to be case sensitive
+- Match the user's energy
+- Detect and respond in the user's language
 - You're in PUBLIC chat - keep it appropriate, no NSFW or harmful content
 - Don't be preachy or lecture people
 - Do not markdown bold text
@@ -150,7 +156,7 @@ def test_gemini() -> bool:
             model=GEMINI_MODEL,
             contents="Say 'OK' if you can hear me.",
             config=types.GenerateContentConfig(
-                max_output_tokens=10
+                max_output_tokens=100
             )
         )
         print(f"✓ Gemini response: {response.text.strip()}")
@@ -184,7 +190,7 @@ def get_gemini_response(user_id: str, user_name: str, message: str) -> str:
 
         # Grounding tools for up-to-date information
         google_search_tool = types.Tool(google_search=types.GoogleSearch())
-        google_maps_tool = types.Tool(google_maps=types.GoogleMaps())
+        #google_maps_tool = types.Tool(google_maps=types.GoogleMaps())
 
         response = client.models.generate_content(
             model=GEMINI_MODEL,
@@ -193,7 +199,7 @@ def get_gemini_response(user_id: str, user_name: str, message: str) -> str:
                 system_instruction=SYSTEM_PROMPT,
                 max_output_tokens=150,
                 temperature=0.7,
-                tools=[google_search_tool, google_maps_tool]
+                tools=[google_search_tool]#, google_maps_tool]
             )
         )
 
