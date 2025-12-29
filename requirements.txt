@@ -1,3 +1,4 @@
 twitchAPI
 google-genai
 python-dotenv
+chromadb

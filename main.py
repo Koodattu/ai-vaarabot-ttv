@@ -6,7 +6,8 @@ Responds when pinged with @botname
 import os
 import json
 import asyncio
-import webbrowser
+import sqlite3
+import time
 from pathlib import Path
 from collections import defaultdict
 from dotenv import load_dotenv
@@ -16,6 +17,8 @@ from twitchAPI.type import AuthScope, ChatEvent
 from twitchAPI.chat import Chat, EventData, ChatMessage
 from google import genai
 from google.genai import types
+import chromadb
+from chromadb.config import Settings
 
 # Load environment variables
 load_dotenv()
@@ -31,6 +34,16 @@ TOKEN_FILE = Path("tokens.json")
 USER_TIMEOUT_SECONDS = float(os.getenv("USER_TIMEOUT_SECONDS", "5"))  # Cooldown per user
 MAX_MESSAGES_PER_HOUR = int(os.getenv("MAX_MESSAGES_PER_HOUR", "10"))  # Max responses per user per hour
 MAX_HISTORY_PER_USER = 10  # Keep last 10 exchanges per user
+RAG_RESULTS_COUNT = 10  # Number of similar messages to retrieve for RAG
+RECENT_CHAT_COUNT = 5  # Recent chat messages to include
+RECENT_USER_COUNT = 5  # Recent messages from specific user
+RECENT_BOT_COUNT = 5  # Recent bot messages to include
+
+OLLAMA_MODEL = "hf.co/mradermacher/Llama-Poro-2-8B-Instruct-GGUF:Q4_K_M"
+
+# Database paths
+DB_PATH = Path("chat_messages.db")
+CHROMA_PATH = Path("chroma_db")
 
 # Required scopes for chat read/write
 USER_SCOPES = [AuthScope.CHAT_READ, AuthScope.CHAT_EDIT, AuthScope.USER_READ_CHAT, AuthScope.USER_WRITE_CHAT]
@@ -67,8 +80,6 @@ Rules:
 - Do not markdown bold text
 - It's okay to be cheeky, not okay to be offensive"""
 
-# Store conversation history per user
-user_histories: dict[str, list[dict]] = defaultdict(list)
 # Store last message time per user for cooldown
 user_last_message: dict[str, float] = {}
 # Store message timestamps per user for hourly rate limit
@@ -77,6 +88,165 @@ user_message_timestamps: dict[str, list[float]] = defaultdict(list)
 # Bot info (set after login)
 bot_username: str = ""
 bot_user_id: str = ""
+
+# Database connection and ChromaDB collection
+db_conn: sqlite3.Connection | None = None
+chroma_collection = None
+
+
+def init_database() -> None:
+    """Initialize SQLite database for storing all chat messages."""
+    global db_conn
+    db_conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    db_conn.execute("""
+        CREATE TABLE IF NOT EXISTS messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp REAL NOT NULL,
+            channel TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            user_name TEXT NOT NULL,
+            message TEXT NOT NULL,
+            is_bot INTEGER DEFAULT 0
+        )
+    """)
+    db_conn.execute("CREATE INDEX IF NOT EXISTS idx_timestamp ON messages(timestamp)")
+    db_conn.execute("CREATE INDEX IF NOT EXISTS idx_user_id ON messages(user_id)")
+    db_conn.execute("CREATE INDEX IF NOT EXISTS idx_is_bot ON messages(is_bot)")
+    db_conn.execute("CREATE INDEX IF NOT EXISTS idx_channel ON messages(channel)")
+    db_conn.execute("CREATE INDEX IF NOT EXISTS idx_channel_timestamp ON messages(channel, timestamp)")
+    db_conn.commit()
+    print(f"✓ SQLite database initialized: {DB_PATH}")
+
+
+def init_chromadb() -> None:
+    """Initialize ChromaDB for vector search."""
+    global chroma_collection
+    client = chromadb.PersistentClient(path=str(CHROMA_PATH))
+    chroma_collection = client.get_or_create_collection(
+        name="chat_messages",
+        metadata={"hnsw:space": "cosine"}
+    )
+    print(f"✓ ChromaDB initialized: {CHROMA_PATH}")
+
+
+def store_message(channel: str, user_id: str, user_name: str, message: str, is_bot: bool = False) -> int:
+    """Store a message in SQLite and ChromaDB. Returns the message ID."""
+    global db_conn, chroma_collection
+
+    timestamp = time.time()
+    channel = channel.lower()  # Normalize channel name
+
+    # Store in SQLite
+    cursor = db_conn.execute(
+        "INSERT INTO messages (timestamp, channel, user_id, user_name, message, is_bot) VALUES (?, ?, ?, ?, ?, ?)",
+        (timestamp, channel, user_id, user_name, message, 1 if is_bot else 0)
+    )
+    db_conn.commit()
+    msg_id = cursor.lastrowid
+
+    # Store in ChromaDB for vector search
+    # Format: "username: message" for better context
+    doc_text = f"{user_name}: {message}"
+    chroma_collection.add(
+        documents=[doc_text],
+        metadatas=[{"channel": channel, "user_id": user_id, "user_name": user_name, "is_bot": is_bot, "timestamp": timestamp}],
+        ids=[str(msg_id)]
+    )
+
+    return msg_id
+
+
+def get_recent_chat_messages(channel: str, limit: int = 5) -> list[dict]:
+    """Get the most recent chat messages from any user in a specific channel."""
+    cursor = db_conn.execute(
+        "SELECT user_name, message, is_bot FROM messages WHERE channel = ? ORDER BY timestamp DESC LIMIT ?",
+        (channel.lower(), limit)
+    )
+    rows = cursor.fetchall()
+    return [{"user": row[0], "message": row[1], "is_bot": bool(row[2])} for row in reversed(rows)]
+
+
+def get_recent_user_messages(channel: str, user_id: str, limit: int = 5) -> list[dict]:
+    """Get the most recent messages from a specific user in a specific channel."""
+    cursor = db_conn.execute(
+        "SELECT user_name, message FROM messages WHERE channel = ? AND user_id = ? AND is_bot = 0 ORDER BY timestamp DESC LIMIT ?",
+        (channel.lower(), user_id, limit)
+    )
+    rows = cursor.fetchall()
+    return [{"user": row[0], "message": row[1]} for row in reversed(rows)]
+
+
+def get_recent_bot_messages(channel: str, limit: int = 5) -> list[dict]:
+    """Get the most recent messages from the bot in a specific channel."""
+    cursor = db_conn.execute(
+        "SELECT user_name, message FROM messages WHERE channel = ? AND is_bot = 1 ORDER BY timestamp DESC LIMIT ?",
+        (channel.lower(), limit)
+    )
+    rows = cursor.fetchall()
+    return [{"user": row[0], "message": row[1]} for row in reversed(rows)]
+
+
+def search_similar_messages(channel: str, query: str, limit: int = 10) -> list[dict]:
+    """Search for similar messages using ChromaDB vector search, filtered by channel."""
+    global chroma_collection
+
+    # Check if collection has any documents
+    if chroma_collection.count() == 0:
+        return []
+
+    results = chroma_collection.query(
+        query_texts=[query],
+        n_results=min(limit * 3, chroma_collection.count()),  # Fetch more to filter
+        where={"channel": channel.lower()}
+    )
+
+    messages = []
+    if results and results['documents'] and results['documents'][0]:
+        for i, doc in enumerate(results['documents'][0]):
+            if len(messages) >= limit:
+                break
+            metadata = results['metadatas'][0][i] if results['metadatas'] else {}
+            messages.append({
+                "text": doc,
+                "is_bot": metadata.get("is_bot", False),
+                "distance": results['distances'][0][i] if results['distances'] else 0
+            })
+
+    return messages
+
+
+def build_context_for_response(channel: str, user_id: str, user_name: str, current_message: str) -> str:
+    """Build context string for Gemini from various sources, scoped to a specific channel."""
+    context_parts = []
+
+    # 1. Recent chat messages (last 5 from anyone in this channel)
+    recent_chat = get_recent_chat_messages(channel, RECENT_CHAT_COUNT)
+    if recent_chat:
+        chat_lines = []
+        for msg in recent_chat:
+            prefix = "[BOT]" if msg["is_bot"] else ""
+            chat_lines.append(f"{prefix}{msg['user']}: {msg['message']}")
+        context_parts.append("=== RECENT CHAT ===\n" + "\n".join(chat_lines))
+
+    # 2. Recent messages from this specific user in this channel
+    recent_user = get_recent_user_messages(channel, user_id, RECENT_USER_COUNT)
+    if recent_user:
+        user_lines = [f"{msg['user']}: {msg['message']}" for msg in recent_user]
+        context_parts.append(f"=== RECENT FROM {user_name.upper()} ===\n" + "\n".join(user_lines))
+
+    # 3. Recent bot messages in this channel
+    recent_bot = get_recent_bot_messages(channel, RECENT_BOT_COUNT)
+    if recent_bot:
+        bot_lines = [f"{msg['user']}: {msg['message']}" for msg in recent_bot]
+        context_parts.append("=== RECENT BOT RESPONSES ===\n" + "\n".join(bot_lines))
+
+    # 4. RAG - similar messages from history in this channel
+    similar = search_similar_messages(channel, current_message, RAG_RESULTS_COUNT)
+    if similar:
+        rag_lines = [msg["text"] for msg in similar]
+        context_parts.append("=== RELATED PAST MESSAGES ===\n" + "\n".join(rag_lines))
+
+    return "\n\n".join(context_parts)
 
 
 def save_tokens(access_token: str, refresh_token: str) -> None:
@@ -156,7 +326,8 @@ def test_gemini() -> bool:
             model=GEMINI_MODEL,
             contents="Say 'OK' if you can hear me.",
             config=types.GenerateContentConfig(
-                max_output_tokens=100
+                max_output_tokens=100,
+                thinking_config=types.ThinkingConfig(thinking_level="low")
             )
         )
         print(f"✓ Gemini response: {response.text.strip()}")
@@ -166,52 +337,45 @@ def test_gemini() -> bool:
         return False
 
 
-def get_gemini_response(user_id: str, user_name: str, message: str) -> str:
-    """Get response from Gemini with conversation history."""
+def get_gemini_response(channel: str, user_id: str, user_name: str, message: str) -> str:
+    """Get response from Gemini with RAG context, scoped to a specific channel."""
     try:
         client = genai.Client(api_key=GEMINI_API_KEY)
 
-        # Build conversation history for context
-        history = user_histories[user_id]
+        # Build context from database and RAG (channel-scoped)
+        context = build_context_for_response(channel, user_id, user_name, message)
 
-        # Create contents with history
-        contents = []
-        for entry in history:
-            contents.append(types.Content(
-                role=entry["role"],
-                parts=[types.Part(text=entry["text"])]
-            ))
+        # Create the prompt with context
+        user_prompt = f"{user_name}: {message}"
 
-        # Add current message
-        contents.append(types.Content(
-            role="user",
-            parts=[types.Part(text=f"{user_name}: {message}")]
-        ))
+        if context:
+            full_prompt = f"""Here is context from the chat history:
+
+{context}
+
+=== CURRENT MESSAGE ===
+{user_prompt}"""
+        else:
+            full_prompt = user_prompt
 
         # Grounding tools for up-to-date information
         google_search_tool = types.Tool(google_search=types.GoogleSearch())
-        #google_maps_tool = types.Tool(google_maps=types.GoogleMaps())
+
+        print(f"[Gemini Prompt]\n{full_prompt}\n")
 
         response = client.models.generate_content(
             model=GEMINI_MODEL,
-            contents=contents,
+            contents=[types.Content(role="user", parts=[types.Part(text=full_prompt)])],
             config=types.GenerateContentConfig(
                 system_instruction=SYSTEM_PROMPT,
                 max_output_tokens=150,
                 temperature=0.7,
-                tools=[google_search_tool]#, google_maps_tool]
+                tools=[google_search_tool],
+                thinking_config=types.ThinkingConfig(thinking_level="low")
             )
         )
 
         response_text = response.text.strip() if response.text else "I couldn't generate a response."
-
-        # Update history
-        user_histories[user_id].append({"role": "user", "text": f"{user_name}: {message}"})
-        user_histories[user_id].append({"role": "model", "text": response_text})
-
-        # Keep only last MAX_HISTORY_PER_USER exchanges (pairs)
-        if len(user_histories[user_id]) > MAX_HISTORY_PER_USER * 2:
-            user_histories[user_id] = user_histories[user_id][-(MAX_HISTORY_PER_USER * 2):]
 
         return response_text
 
@@ -274,13 +438,14 @@ async def on_message(msg: ChatMessage) -> None:
     """Handle incoming chat messages."""
     global bot_username
 
-    # Ignore our own messages
-    if msg.user.name.lower() == bot_username:
-        return
-
     message_text = msg.text.strip()
     user_id = msg.user.id
     user_name = msg.user.display_name
+    channel = msg.room.name
+
+    # Ignore our own messages
+    if msg.user.name.lower() == bot_username:
+        return
 
     # Check if bot is mentioned
     mention_patterns = [f"@{bot_username}"]
@@ -293,17 +458,20 @@ async def on_message(msg: ChatMessage) -> None:
             is_reply_to_bot = msg.reply.parent_user_login.lower() == bot_username
 
     if not is_mentioned and not is_reply_to_bot:
-        # Store message in history anyway for context
+        # Store message but don't respond
+        store_message(channel, user_id, user_name, message_text, is_bot=False)
         return
 
     # Check cooldown
     if is_user_on_cooldown(user_id):
         print(f"[Cooldown] {user_name} is on cooldown")
+        store_message(channel, user_id, user_name, message_text, is_bot=False)
         return
 
     # Check hourly rate limit
     if MAX_MESSAGES_PER_HOUR > 0 and is_user_rate_limited(user_id):
         print(f"[Rate Limited] {user_name} has exceeded {MAX_MESSAGES_PER_HOUR} messages/hour")
+        store_message(channel, user_id, user_name, message_text, is_bot=False)
         return
 
     # Remove the mention from the message for cleaner processing
@@ -314,10 +482,13 @@ async def on_message(msg: ChatMessage) -> None:
     if not clean_message:
         clean_message = "Hello!"
 
-    print(f"\n[Chat] {user_name}: {message_text}")
+    print(f"\n[{channel}] {user_name}: {message_text}")
 
-    # Get response from Gemini
-    response = get_gemini_response(user_id, user_name, clean_message)
+    # Get response from Gemini (channel-scoped context) - BEFORE storing current message
+    response = get_gemini_response(channel, user_id, user_name, clean_message)
+
+    # Now store the user's message (after context was built without it)
+    store_message(channel, user_id, user_name, message_text, is_bot=False)
 
     # Truncate if too long for Twitch (500 char limit)
     if len(response) > 480:
@@ -328,12 +499,15 @@ async def on_message(msg: ChatMessage) -> None:
     # Send reply
     try:
         await msg.reply(response)
+        # Store bot response in database
+        store_message(channel, bot_user_id, bot_username, response, is_bot=True)
         update_user_cooldown(user_id)
     except Exception as e:
         print(f"Error sending reply: {e}")
         # Try sending as regular message
         try:
             await msg.chat.send_message(msg.room.name, f"@{user_name} {response}")
+            store_message(channel, bot_user_id, bot_username, f"@{user_name} {response}", is_bot=True)
             update_user_cooldown(user_id)
         except Exception as e2:
             print(f"Error sending message: {e2}")
@@ -363,6 +537,11 @@ async def run() -> None:
     if not test_gemini():
         print("\n✗ Cannot start without working Gemini API")
         return
+
+    # Initialize databases
+    print("\n📦 Initializing databases...")
+    init_database()
+    init_chromadb()
 
     # Initialize Twitch API
     print("\n🔌 Connecting to Twitch...")
