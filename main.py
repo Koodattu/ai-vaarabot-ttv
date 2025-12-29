@@ -23,6 +23,9 @@ from chromadb.config import Settings
 # Load environment variables
 load_dotenv()
 
+# LLM Provider Switch: Set to True to use Ollama locally, False for Gemini API
+USE_OLLAMA = True
+
 # Configuration
 TWITCH_APP_ID = os.getenv("TWITCH_APP_ID")
 TWITCH_APP_SECRET = os.getenv("TWITCH_APP_SECRET")
@@ -337,6 +340,64 @@ def test_gemini() -> bool:
         return False
 
 
+def test_ollama() -> bool:
+    """Test Ollama API with a simple prompt."""
+    print(f"\n🤖 Testing Ollama API (model: {OLLAMA_MODEL})...")
+    try:
+        from ollama import Client
+        client = Client(host='http://127.0.0.1:11434')
+        response = client.chat(
+            model=OLLAMA_MODEL,
+            messages=[{'role': 'user', 'content': "Say 'OK' if you can hear me."}]
+        )
+        print(f"✓ Ollama response: {response.message.content.strip()}")
+        return True
+    except Exception as e:
+        print(f"✗ Ollama API test failed: {e}")
+        return False
+
+
+def get_ollama_response(channel: str, user_id: str, user_name: str, message: str) -> str:
+    """Get response from Ollama with RAG context, scoped to a specific channel."""
+    try:
+        # Build context from database and RAG (channel-scoped)
+        context = build_context_for_response(channel, user_id, user_name, message)
+
+        # Create the prompt with context
+        user_prompt = f"{user_name}: {message}"
+
+        if context:
+            full_prompt = f"""Here is context from the chat history:
+
+{context}
+
+=== CURRENT MESSAGE ===
+{user_prompt}"""
+        else:
+            full_prompt = user_prompt
+
+        print(f"[Ollama Prompt]\n{full_prompt}\n")
+
+        from ollama import Client
+        client = Client(host='http://127.0.0.1:11434')
+        response = client.chat(
+            model=OLLAMA_MODEL,
+            messages=[
+                {'role': 'system', 'content': SYSTEM_PROMPT},
+                {'role': 'user', 'content': full_prompt}
+            ],
+            options={'temperature': 0.7}
+        )
+
+        response_text = response.message.content.strip() if response.message.content else "I couldn't generate a response."
+
+        return response_text
+
+    except Exception as e:
+        print(f"Ollama error: {e}")
+        return "Sorry, I couldn't process that right now."
+
+
 def get_gemini_response(channel: str, user_id: str, user_name: str, message: str) -> str:
     """Get response from Gemini with RAG context, scoped to a specific channel."""
     try:
@@ -484,8 +545,11 @@ async def on_message(msg: ChatMessage) -> None:
 
     print(f"\n[{channel}] {user_name}: {message_text}")
 
-    # Get response from Gemini (channel-scoped context) - BEFORE storing current message
-    response = get_gemini_response(channel, user_id, user_name, clean_message)
+    # Get response from LLM (channel-scoped context) - BEFORE storing current message
+    if USE_OLLAMA:
+        response = get_ollama_response(channel, user_id, user_name, clean_message)
+    else:
+        response = get_gemini_response(channel, user_id, user_name, clean_message)
 
     # Now store the user's message (after context was built without it)
     store_message(channel, user_id, user_name, message_text, is_bot=False)
@@ -525,7 +589,7 @@ async def run() -> None:
         missing.append("TWITCH_APP_ID")
     if not TWITCH_APP_SECRET:
         missing.append("TWITCH_APP_SECRET")
-    if not GEMINI_API_KEY:
+    if not USE_OLLAMA and not GEMINI_API_KEY:
         missing.append("GEMINI_API_KEY")
 
     if missing:
@@ -533,10 +597,15 @@ async def run() -> None:
         print("  Please check your .env file")
         return
 
-    # Test Gemini first
-    if not test_gemini():
-        print("\n✗ Cannot start without working Gemini API")
-        return
+    # Test the selected LLM provider
+    if USE_OLLAMA:
+        if not test_ollama():
+            print("\n✗ Cannot start without working Ollama API")
+            return
+    else:
+        if not test_gemini():
+            print("\n✗ Cannot start without working Gemini API")
+            return
 
     # Initialize databases
     print("\n📦 Initializing databases...")
