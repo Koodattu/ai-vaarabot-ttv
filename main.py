@@ -44,7 +44,7 @@ RECENT_CHAT_COUNT = 5  # Recent chat messages to include
 RECENT_USER_COUNT = 5  # Recent messages from specific user
 RECENT_BOT_COUNT = 5  # Recent bot messages to include
 
-OLLAMA_MODEL = "gpt-oss:20b"#"hf.co/mradermacher/Llama-Poro-2-8B-Instruct-GGUF:Q4_K_M"
+OLLAMA_MODEL = "gpt-oss:20b" #"hf.co/mradermacher/Llama-Poro-2-8B-Instruct-GGUF:Q4_K_M"
 OLLAMA_VISION_MODEL = "qwen3-vl:2b"
 
 # Database paths
@@ -53,7 +53,7 @@ CHROMA_PATH = Path("chroma_db")
 SCREENSHOT_PATH = Path("screenshots")
 
 # Twitch channel for screenshots
-TWITCH_CHANNEL = "paulinpelivideot"
+TWITCH_CHANNEL = "forsen"
 
 # Required scopes for chat read/write
 USER_SCOPES = [AuthScope.CHAT_READ, AuthScope.CHAT_EDIT, AuthScope.USER_READ_CHAT, AuthScope.USER_WRITE_CHAT]
@@ -88,7 +88,10 @@ Rules:
 - You're in PUBLIC chat - keep it appropriate, no NSFW or harmful content
 - Don't be preachy or lecture people
 - Do not markdown bold text
-- It's okay to be cheeky, not okay to be offensive"""
+- It's okay to be cheeky, not okay to be offensive
+
+Tools:
+- You have access to a tool that can capture a screenshot of the current Twitch stream when needed"""
 
 # Store last message time per user for cooldown
 user_last_message: dict[str, float] = {}
@@ -115,13 +118,18 @@ def capture_stream_screenshot() -> dict:
 
     Returns a dict with success status, file path, and any error message.
     """
+    from streamlink.session import Streamlink
+
     channel_url = f"https://www.twitch.tv/{TWITCH_CHANNEL}"
     timestamp = int(time.time())
     output_file = SCREENSHOT_PATH / f"screenshot_{timestamp}.jpg"
 
     try:
-        # Get stream URL via streamlink
-        streams = streamlink.streams(channel_url)
+        # Get stream URL via streamlink with ad filtering
+        session = Streamlink()
+        plugin_name, plugin_class, resolved_url = session.resolve_url(channel_url)
+        plugin = plugin_class(session, resolved_url, options={"disable-ads": True, "low-latency": True})
+        streams = plugin.streams()
 
         if not streams:
             return {"success": False, "error": "Stream is offline", "file_path": None}
@@ -525,6 +533,8 @@ def get_ollama_response(channel: str, user_id: str, user_name: str, message: str
             ],
             options={'temperature': 0.7}
         )
+
+        print(f"[Ollama Raw Response] {response}")
 
         response_text = response.message.content.strip() if response.message.content else "I couldn't generate a response."
 
