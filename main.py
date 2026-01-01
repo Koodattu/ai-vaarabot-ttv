@@ -42,7 +42,7 @@ RECENT_CHAT_COUNT = 5  # Recent chat messages to include
 RECENT_USER_COUNT = 5  # Recent messages from specific user
 RECENT_BOT_COUNT = 5  # Recent bot messages to include
 
-OLLAMA_MODEL = "hf.co/mradermacher/Llama-Poro-2-8B-Instruct-GGUF:Q4_K_M"
+OLLAMA_MODEL = "gpt-oss:20b"#"hf.co/mradermacher/Llama-Poro-2-8B-Instruct-GGUF:Q4_K_M"
 
 # Database paths
 DB_PATH = Path("chat_messages.db")
@@ -429,7 +429,7 @@ def get_gemini_response(channel: str, user_id: str, user_name: str, message: str
             contents=[types.Content(role="user", parts=[types.Part(text=full_prompt)])],
             config=types.GenerateContentConfig(
                 system_instruction=SYSTEM_PROMPT,
-                max_output_tokens=150,
+                max_output_tokens=400,
                 temperature=0.7,
                 tools=[google_search_tool],
                 thinking_config=types.ThinkingConfig(thinking_level="low")
@@ -497,7 +497,7 @@ async def on_ready(ready_event: EventData) -> None:
 
 async def on_message(msg: ChatMessage) -> None:
     """Handle incoming chat messages."""
-    global bot_username
+    global bot_username, USE_OLLAMA
 
     message_text = msg.text.strip()
     user_id = msg.user.id
@@ -506,6 +506,34 @@ async def on_message(msg: ChatMessage) -> None:
 
     # Ignore our own messages
     if msg.user.name.lower() == bot_username:
+        return
+
+    # Handle !vaarabot mode commands
+    message_lower = message_text.lower()
+    if message_lower == "!vaarabot mode local":
+        if USE_OLLAMA:
+            await msg.reply("Already using local mode (Ollama)")
+            return
+        print(f"[Command] {user_name} requested switch to local mode")
+        if test_ollama():
+            USE_OLLAMA = True
+            await msg.reply("Switched to local mode (Ollama) SeemsGood")
+            print("[Mode] Switched to Ollama")
+        else:
+            await msg.reply("Failed to switch to local mode - Ollama test failed NotLikeThis")
+        return
+
+    if message_lower == "!vaarabot mode cloud":
+        if not USE_OLLAMA:
+            await msg.reply("Already using cloud mode (Gemini)")
+            return
+        print(f"[Command] {user_name} requested switch to cloud mode")
+        if test_gemini():
+            USE_OLLAMA = False
+            await msg.reply("Switched to cloud mode (Gemini) SeemsGood")
+            print("[Mode] Switched to Gemini")
+        else:
+            await msg.reply("Failed to switch to cloud mode - Gemini test failed NotLikeThis")
         return
 
     # Check if bot is mentioned
