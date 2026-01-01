@@ -45,6 +45,7 @@ RECENT_USER_COUNT = 5  # Recent messages from specific user
 RECENT_BOT_COUNT = 5  # Recent bot messages to include
 
 OLLAMA_MODEL = "gpt-oss:20b"#"hf.co/mradermacher/Llama-Poro-2-8B-Instruct-GGUF:Q4_K_M"
+OLLAMA_VISION_MODEL = "qwen3-vl:2b"
 
 # Database paths
 DB_PATH = Path("chat_messages.db")
@@ -52,7 +53,7 @@ CHROMA_PATH = Path("chroma_db")
 SCREENSHOT_PATH = Path("screenshots")
 
 # Twitch channel for screenshots
-TWITCH_CHANNEL = "wiba"
+TWITCH_CHANNEL = "paulinpelivideot"
 
 # Required scopes for chat read/write
 USER_SCOPES = [AuthScope.CHAT_READ, AuthScope.CHAT_EDIT, AuthScope.USER_READ_CHAT, AuthScope.USER_WRITE_CHAT]
