@@ -26,7 +26,7 @@ import streamlink
 load_dotenv()
 
 # LLM Provider Switch: Set to True to use Ollama locally, False for Gemini API
-USE_OLLAMA = True
+USE_OLLAMA = False
 
 # Configuration
 TWITCH_APP_ID = os.getenv("TWITCH_APP_ID")
@@ -44,7 +44,8 @@ RECENT_CHAT_COUNT = 5  # Recent chat messages to include
 RECENT_USER_COUNT = 5  # Recent messages from specific user
 RECENT_BOT_COUNT = 5  # Recent bot messages to include
 
-OLLAMA_MODEL = "gpt-oss:20b" #"hf.co/mradermacher/Llama-Poro-2-8B-Instruct-GGUF:Q4_K_M"
+OLLAMA_MODEL = "gpt-oss:20b"#"alibayram/Qwen3-30B-A3B-Instruct-2507"#
+OLLAMA_MODEL_SUPPORTS_VISION = False  # Set to True if main model can handle images directly, False to use separate vision model
 OLLAMA_VISION_MODEL = "qwen3-vl:2b"
 
 # Database paths
@@ -91,7 +92,9 @@ Rules:
 - It's okay to be cheeky, not okay to be offensive
 
 Tools:
-- You have access to a tool that can capture a screenshot of the current Twitch stream when needed"""
+- You have access to a tool that can capture a screenshot of the current Twitch stream when needed
+- Use it when a user asks what is happening on stream, what is on screen, or wants to know about the current stream content
+- Do not provide the screenshot but use it to enhance your answer with details from the image"""
 
 # Store last message time per user for cooldown
 user_last_message: dict[str, float] = {}
@@ -474,35 +477,29 @@ def describe_image_ollama(image_path: str) -> str:
     return response.message.content.strip()
 
 
-def should_capture_screenshot(message: str) -> bool:
-    """Check if the message is asking about what's on stream."""
-    keywords = ['stream', 'screen', 'screenshot', 'what is on', "what's on", 'näytöllä', 'ruudulla', 'striimissä', 'mitä tapahtuu']
-    message_lower = message.lower()
-    return any(kw in message_lower for kw in keywords)
+# Ollama tool declaration for screenshot
+OLLAMA_SCREENSHOT_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "capture_stream_screenshot",
+        "description": "Captures a screenshot of the current Twitch livestream. Use this when a user asks to see what's happening on stream, wants to know what's on screen, or asks about the current stream content.",
+        "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": []
+        }
+    }
+}
 
 
 def get_ollama_response(channel: str, user_id: str, user_name: str, message: str) -> str:
-    """Get response from Ollama with RAG context, scoped to a specific channel."""
+    """Get response from Ollama with RAG context and tool support, scoped to a specific channel."""
     try:
+        from ollama import Client
+        client = Client(host='http://127.0.0.1:11434')
+
         # Build context from database and RAG (channel-scoped)
         context = build_context_for_response(channel, user_id, user_name, message)
-
-        # Check if user is asking about the stream
-        image_description = None
-        if should_capture_screenshot(message):
-            print("[Ollama] Screenshot requested, capturing...")
-            result = capture_stream_screenshot()
-            if result["success"]:
-                print(f"[Ollama] Screenshot captured: {result['file_path']}")
-                try:
-                    image_description = describe_image_ollama(result["file_path"])
-                    print(f"[Ollama] Image description: {image_description[:100]}...")
-                except Exception as e:
-                    print(f"[Ollama] Vision model failed: {e}")
-                    image_description = f"(Failed to analyze screenshot: {e})"
-            else:
-                print(f"[Ollama] Screenshot failed: {result['error']}")
-                image_description = f"(Screenshot capture failed: {result['error']})"
 
         # Create the prompt with context
         user_prompt = f"{user_name}: {message}"
@@ -517,27 +514,83 @@ def get_ollama_response(channel: str, user_id: str, user_name: str, message: str
         else:
             full_prompt = user_prompt
 
-        # Add image description if we captured one
-        if image_description:
-            full_prompt += f"\n\n=== STREAM SCREENSHOT ANALYSIS ===\n{image_description}"
-
         print(f"[Ollama Prompt]\n{full_prompt}\n")
 
-        from ollama import Client
-        client = Client(host='http://127.0.0.1:11434')
+        # First call with tools
         response = client.chat(
             model=OLLAMA_MODEL,
             messages=[
                 {'role': 'system', 'content': SYSTEM_PROMPT},
                 {'role': 'user', 'content': full_prompt}
             ],
+            tools=[OLLAMA_SCREENSHOT_TOOL],
             options={'temperature': 0.7}
         )
 
-        print(f"[Ollama Raw Response] {response}")
+        # Check if model wants to call a tool
+        if response.message.tool_calls:
+            for tool_call in response.message.tool_calls:
+                tool_name = tool_call.function.name
+                print(f"[Ollama Tool Call] {tool_name}")
+
+                # Handle screenshot tool
+                if tool_name == "capture_stream_screenshot":
+                    print("[Ollama] Capturing screenshot...")
+                    result = capture_stream_screenshot()
+
+                    if not result["success"]:
+                        print(f"[Ollama] Screenshot failed: {result['error']}")
+                        error_prompt = full_prompt + f"\n\n(Screenshot capture failed: {result['error']})"
+                        second_response = client.chat(
+                            model=OLLAMA_MODEL,
+                            messages=[
+                                {'role': 'system', 'content': SYSTEM_PROMPT},
+                                {'role': 'user', 'content': error_prompt}
+                            ],
+                            options={'temperature': 0.7}
+                        )
+                        return second_response.message.content.strip() if second_response.message.content else "Failed to capture screenshot."
+
+                    print(f"[Ollama] Screenshot captured: {result['file_path']}")
+
+                    # Diverging path based on vision support
+                    if OLLAMA_MODEL_SUPPORTS_VISION:
+                        # Model supports images - send image directly (Gemini-style)
+                        print("[Ollama] Main model supports vision, sending image directly...")
+                        with open(result["file_path"], 'rb') as f:
+                            image_bytes = f.read()
+
+                        second_response = client.chat(
+                            model=OLLAMA_MODEL,
+                            messages=[
+                                {'role': 'system', 'content': SYSTEM_PROMPT},
+                                {'role': 'user', 'content': full_prompt, 'images': [result["file_path"]]}
+                            ],
+                            options={'temperature': 0.7}
+                        )
+                    else:
+                        # Model doesn't support images - use vision model to describe
+                        print("[Ollama] Main model doesn't support vision, using separate vision model...")
+                        try:
+                            image_description = describe_image_ollama(result["file_path"])
+                            print(f"[Ollama] Image description: {image_description[:100]}...")
+                        except Exception as e:
+                            print(f"[Ollama] Vision model failed: {e}")
+                            image_description = f"(Failed to analyze screenshot: {e})"
+
+                        second_prompt = full_prompt + f"\n\n=== STREAM SCREENSHOT ANALYSIS ===\n{image_description}"
+                        second_response = client.chat(
+                            model=OLLAMA_MODEL,
+                            messages=[
+                                {'role': 'system', 'content': SYSTEM_PROMPT},
+                                {'role': 'user', 'content': second_prompt}
+                            ],
+                            options={'temperature': 0.7}
+                        )
+
+                    return second_response.message.content.strip() if second_response.message.content else "Screenshot captured!"
 
         response_text = response.message.content.strip() if response.message.content else "I couldn't generate a response."
-
         return response_text
 
     except Exception as e:
