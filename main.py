@@ -56,7 +56,7 @@ CHROMA_PATH = Path("chroma_db")
 SCREENSHOT_PATH = Path("screenshots")
 
 # Twitch channel for screenshots
-TWITCH_CHANNEL = "xaryu"
+TWITCH_CHANNEL = "vaarattu"
 
 # Required scopes for chat read/write
 USER_SCOPES = [AuthScope.CHAT_READ, AuthScope.CHAT_EDIT, AuthScope.USER_READ_CHAT, AuthScope.USER_WRITE_CHAT]
@@ -204,7 +204,7 @@ WEB_SEARCH_TOOL_DECLARATION = {
 }
 
 
-def perform_web_search(query: str, num_results: int = 1) -> dict:
+def perform_web_search(query: str, num_results: int = 2) -> dict:
     """Perform a Google Custom Search and return results.
 
     Returns a dict with success status, results list, and any error message.
