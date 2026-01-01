@@ -26,7 +26,7 @@ import streamlink
 load_dotenv()
 
 # LLM Provider Switch: Set to True to use Ollama locally, False for Gemini API
-USE_OLLAMA = False
+USE_OLLAMA = True
 
 # Configuration
 TWITCH_APP_ID = os.getenv("TWITCH_APP_ID")
@@ -419,20 +419,58 @@ def test_gemini() -> bool:
 
 
 def test_ollama() -> bool:
-    """Test Ollama API with a simple prompt."""
+    """Test Ollama API with both main model and vision model."""
+    from ollama import Client
+    client = Client(host='http://127.0.0.1:11434')
+
+    # Test main model
     print(f"\n🤖 Testing Ollama API (model: {OLLAMA_MODEL})...")
     try:
-        from ollama import Client
-        client = Client(host='http://127.0.0.1:11434')
         response = client.chat(
             model=OLLAMA_MODEL,
             messages=[{'role': 'user', 'content': "Say 'OK' if you can hear me."}]
         )
         print(f"✓ Ollama response: {response.message.content.strip()}")
-        return True
     except Exception as e:
         print(f"✗ Ollama API test failed: {e}")
         return False
+
+    # Test vision model
+    print(f"🤖 Testing Ollama vision model: {OLLAMA_VISION_MODEL}...")
+    try:
+        response = client.chat(
+            model=OLLAMA_VISION_MODEL,
+            messages=[{'role': 'user', 'content': "Say 'OK' if you can hear me."}]
+        )
+        print(f"✓ Vision model response: {response.message.content.strip()}")
+    except Exception as e:
+        print(f"✗ Ollama vision model test failed: {e}")
+        return False
+
+    return True
+
+
+def describe_image_ollama(image_path: str) -> str:
+    """Use vision model to describe an image. Returns text description."""
+    from ollama import Client
+    client = Client(host='http://127.0.0.1:11434')
+
+    response = client.chat(
+        model=OLLAMA_VISION_MODEL,
+        messages=[{
+            'role': 'user',
+            'content': 'Describe this stream screenshot briefly. What game/activity, what is on screen, any visible text.',
+            'images': [image_path]
+        }]
+    )
+    return response.message.content.strip()
+
+
+def should_capture_screenshot(message: str) -> bool:
+    """Check if the message is asking about what's on stream."""
+    keywords = ['stream', 'screen', 'screenshot', 'what is on', "what's on", 'näytöllä', 'ruudulla', 'striimissä', 'mitä tapahtuu']
+    message_lower = message.lower()
+    return any(kw in message_lower for kw in keywords)
 
 
 def get_ollama_response(channel: str, user_id: str, user_name: str, message: str) -> str:
@@ -440,6 +478,23 @@ def get_ollama_response(channel: str, user_id: str, user_name: str, message: str
     try:
         # Build context from database and RAG (channel-scoped)
         context = build_context_for_response(channel, user_id, user_name, message)
+
+        # Check if user is asking about the stream
+        image_description = None
+        if should_capture_screenshot(message):
+            print("[Ollama] Screenshot requested, capturing...")
+            result = capture_stream_screenshot()
+            if result["success"]:
+                print(f"[Ollama] Screenshot captured: {result['file_path']}")
+                try:
+                    image_description = describe_image_ollama(result["file_path"])
+                    print(f"[Ollama] Image description: {image_description[:100]}...")
+                except Exception as e:
+                    print(f"[Ollama] Vision model failed: {e}")
+                    image_description = f"(Failed to analyze screenshot: {e})"
+            else:
+                print(f"[Ollama] Screenshot failed: {result['error']}")
+                image_description = f"(Screenshot capture failed: {result['error']})"
 
         # Create the prompt with context
         user_prompt = f"{user_name}: {message}"
@@ -453,6 +508,10 @@ def get_ollama_response(channel: str, user_id: str, user_name: str, message: str
 {user_prompt}"""
         else:
             full_prompt = user_prompt
+
+        # Add image description if we captured one
+        if image_description:
+            full_prompt += f"\n\n=== STREAM SCREENSHOT ANALYSIS ===\n{image_description}"
 
         print(f"[Ollama Prompt]\n{full_prompt}\n")
 
