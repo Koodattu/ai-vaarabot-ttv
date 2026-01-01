@@ -208,3 +208,4 @@ __marimo__/
 tokens.json
 /chroma_db
 *.db
+/screenshots

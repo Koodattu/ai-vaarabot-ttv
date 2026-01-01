@@ -19,12 +19,14 @@ from google import genai
 from google.genai import types
 import chromadb
 from chromadb.config import Settings
+import subprocess
+import streamlink
 
 # Load environment variables
 load_dotenv()
 
 # LLM Provider Switch: Set to True to use Ollama locally, False for Gemini API
-USE_OLLAMA = True
+USE_OLLAMA = False
 
 # Configuration
 TWITCH_APP_ID = os.getenv("TWITCH_APP_ID")
@@ -47,6 +49,10 @@ OLLAMA_MODEL = "gpt-oss:20b"#"hf.co/mradermacher/Llama-Poro-2-8B-Instruct-GGUF:Q
 # Database paths
 DB_PATH = Path("chat_messages.db")
 CHROMA_PATH = Path("chroma_db")
+SCREENSHOT_PATH = Path("screenshots")
+
+# Twitch channel for screenshots
+TWITCH_CHANNEL = "wiba"
 
 # Required scopes for chat read/write
 USER_SCOPES = [AuthScope.CHAT_READ, AuthScope.CHAT_EDIT, AuthScope.USER_READ_CHAT, AuthScope.USER_WRITE_CHAT]
@@ -95,6 +101,77 @@ bot_user_id: str = ""
 # Database connection and ChromaDB collection
 db_conn: sqlite3.Connection | None = None
 chroma_collection = None
+
+
+def init_screenshots_dir() -> None:
+    """Initialize screenshots directory."""
+    SCREENSHOT_PATH.mkdir(exist_ok=True)
+    print(f"✓ Screenshots directory: {SCREENSHOT_PATH}")
+
+
+def capture_stream_screenshot() -> dict:
+    """Capture a screenshot from the Twitch stream using streamlink + ffmpeg.
+
+    Returns a dict with success status, file path, and any error message.
+    """
+    channel_url = f"https://www.twitch.tv/{TWITCH_CHANNEL}"
+    timestamp = int(time.time())
+    output_file = SCREENSHOT_PATH / f"screenshot_{timestamp}.jpg"
+
+    try:
+        # Get stream URL via streamlink
+        streams = streamlink.streams(channel_url)
+
+        if not streams:
+            return {"success": False, "error": "Stream is offline", "file_path": None}
+
+        # Get best quality stream URL
+        stream_url = streams.get('best') or streams.get('720p') or streams.get('480p')
+        if not stream_url:
+            return {"success": False, "error": "No suitable stream quality found", "file_path": None}
+
+        stream_url = stream_url.url
+
+        # Use FFmpeg to grab 1 frame
+        command = [
+            'ffmpeg',
+            '-i', stream_url,
+            '-ss', '00:00:01',
+            '-frames:v', '1',
+            '-q:v', '2',
+            str(output_file),
+            '-y'
+        ]
+
+        result = subprocess.run(
+            command,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            timeout=30
+        )
+
+        if result.returncode == 0 and output_file.exists():
+            print(f"✓ Screenshot saved: {output_file}")
+            return {"success": True, "file_path": str(output_file), "error": None}
+        else:
+            return {"success": False, "error": "FFmpeg failed to capture frame", "file_path": None}
+
+    except subprocess.TimeoutExpired:
+        return {"success": False, "error": "Screenshot capture timed out", "file_path": None}
+    except Exception as e:
+        return {"success": False, "error": str(e), "file_path": None}
+
+
+# Gemini tool declaration for screenshot
+SCREENSHOT_TOOL_DECLARATION = {
+    "name": "capture_stream_screenshot",
+    "description": "Captures a screenshot of the current Twitch livestream. Use this when a user asks to see what's happening on stream, wants to know what's on screen, or asks about the current stream content.",
+    "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": []
+    }
+}
 
 
 def init_database() -> None:
@@ -399,7 +476,7 @@ def get_ollama_response(channel: str, user_id: str, user_name: str, message: str
 
 
 def get_gemini_response(channel: str, user_id: str, user_name: str, message: str) -> str:
-    """Get response from Gemini with RAG context, scoped to a specific channel."""
+    """Get response from Gemini with RAG context and tool support, scoped to a specific channel."""
     try:
         client = genai.Client(api_key=GEMINI_API_KEY)
 
@@ -419,30 +496,89 @@ def get_gemini_response(channel: str, user_id: str, user_name: str, message: str
         else:
             full_prompt = user_prompt
 
-        # Grounding tools for up-to-date information
-        google_search_tool = types.Tool(google_search=types.GoogleSearch())
+        # Tools: Screenshot function (can't mix with google_search)
+        tools = types.Tool(function_declarations=[SCREENSHOT_TOOL_DECLARATION])
 
         print(f"[Gemini Prompt]\n{full_prompt}\n")
 
+        # Build conversation messages
+        messages = [types.Content(role="user", parts=[types.Part(text=full_prompt)])]
+
+        # Initial request with manual function calling
         response = client.models.generate_content(
             model=GEMINI_MODEL,
-            contents=[types.Content(role="user", parts=[types.Part(text=full_prompt)])],
+            contents=messages,
             config=types.GenerateContentConfig(
                 system_instruction=SYSTEM_PROMPT,
                 max_output_tokens=400,
                 temperature=0.7,
-                tools=[google_search_tool],
+                tools=[tools],
+                automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
                 thinking_config=types.ThinkingConfig(thinking_level="low")
             )
         )
 
-        response_text = response.text.strip() if response.text else "I couldn't generate a response."
+        # Check for function call and handle it
+        response_text = handle_gemini_response(client, messages, response)
 
         return response_text
 
     except Exception as e:
         print(f"Gemini error: {e}")
         return "Sorry, I couldn't process that right now."
+
+
+def handle_gemini_response(client, messages: list, response) -> str:
+    """Handle Gemini response, including function calls."""
+    # Check if there's a function call in the response
+    if (response.candidates and
+        response.candidates[0].content and
+        response.candidates[0].content.parts):
+
+        for part in response.candidates[0].content.parts:
+            if hasattr(part, 'function_call') and part.function_call:
+                function_call = part.function_call
+                print(f"[Gemini Tool Call] {function_call.name}")
+
+                # Execute the function
+                if function_call.name == "capture_stream_screenshot":
+                    result = capture_stream_screenshot()
+
+                    # Add assistant's function call to messages
+                    messages.append(response.candidates[0].content)
+
+                    if result["success"]:
+                        print(f"[Tool Result] Screenshot captured: {result['file_path']}")
+
+                        # Read and add the image to messages
+                        with open(result["file_path"], 'rb') as f:
+                            image_bytes = f.read()
+
+                        image_part = types.Part.from_bytes(data=image_bytes, mime_type='image/jpeg')
+                        messages.append(types.Content(role="user", parts=[image_part]))
+                    else:
+                        print(f"[Tool Result] Screenshot failed: {result['error']}")
+                        messages.append(types.Content(
+                            role="user",
+                            parts=[types.Part(text=f"(Screenshot capture failed: {result['error']})")]
+                        ))
+
+                    # Get final response
+                    final_response = client.models.generate_content(
+                        model=GEMINI_MODEL,
+                        contents=messages,
+                        config=types.GenerateContentConfig(
+                            system_instruction=SYSTEM_PROMPT,
+                            max_output_tokens=400,
+                            temperature=0.7,
+                            thinking_config=types.ThinkingConfig(thinking_level="low")
+                        )
+                    )
+
+                    return final_response.text.strip() if final_response.text else "Screenshot captured!"
+
+    # No function call, return regular text
+    return response.text.strip() if response.text else "I couldn't generate a response."
 
 
 def is_user_on_cooldown(user_id: str) -> bool:
@@ -635,10 +771,11 @@ async def run() -> None:
             print("\n✗ Cannot start without working Gemini API")
             return
 
-    # Initialize databases
+    # Initialize databases and directories
     print("\n📦 Initializing databases...")
     init_database()
     init_chromadb()
+    init_screenshots_dir()
 
     # Initialize Twitch API
     print("\n🔌 Connecting to Twitch...")
