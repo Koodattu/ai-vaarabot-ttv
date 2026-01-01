@@ -619,15 +619,15 @@ def get_gemini_response(channel: str, user_id: str, user_name: str, message: str
         else:
             full_prompt = user_prompt
 
-        # Tools: Screenshot function (can't mix with google_search)
-        tools = types.Tool(function_declarations=[SCREENSHOT_TOOL_DECLARATION])
+        # 1. Define custom screenshot tool
+        custom_tool = types.Tool(function_declarations=[SCREENSHOT_TOOL_DECLARATION])
 
         print(f"[Gemini Prompt]\n{full_prompt}\n")
 
         # Build conversation messages
         messages = [types.Content(role="user", parts=[types.Part(text=full_prompt)])]
 
-        # Initial request with manual function calling
+        # Initial request with both tools
         response = client.models.generate_content(
             model=GEMINI_MODEL,
             contents=messages,
@@ -635,13 +635,14 @@ def get_gemini_response(channel: str, user_id: str, user_name: str, message: str
                 system_instruction=SYSTEM_PROMPT,
                 max_output_tokens=400,
                 temperature=0.7,
-                tools=[tools],
+                tools=[custom_tool],  # Pass both tools
                 automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
                 thinking_config=types.ThinkingConfig(thinking_level="low")
             )
         )
 
-        # Check for function call and handle it
+        # With automatic_function_calling enabled, Gemini handles google_search automatically
+        # We only need to manually handle screenshot tool calls
         response_text = handle_gemini_response(client, messages, response)
 
         return response_text
