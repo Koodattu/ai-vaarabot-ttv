@@ -4,3 +4,4 @@ python-dotenv
 chromadb
 ollama
 streamlink
+requests

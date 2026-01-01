@@ -32,6 +32,8 @@ USE_OLLAMA = False
 TWITCH_APP_ID = os.getenv("TWITCH_APP_ID")
 TWITCH_APP_SECRET = os.getenv("TWITCH_APP_SECRET")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GOOGLE_SEARCH_API_KEY = os.getenv("GOOGLE_SEARCH_API_KEY")
+GOOGLE_SEARCH_ENGINE_ID = os.getenv("GOOGLE_SEARCH_ENGINE_ID")
 # Channels to join (comma-separated, empty = bot's own channel)
 _raw_channels = os.getenv("TARGET_CHANNELS", "").strip()
 TARGET_CHANNELS = [ch.strip().lower() for ch in _raw_channels.split(",") if ch.strip()] if _raw_channels else []
@@ -54,7 +56,7 @@ CHROMA_PATH = Path("chroma_db")
 SCREENSHOT_PATH = Path("screenshots")
 
 # Twitch channel for screenshots
-TWITCH_CHANNEL = "forsen"
+TWITCH_CHANNEL = "xaryu"
 
 # Required scopes for chat read/write
 USER_SCOPES = [AuthScope.CHAT_READ, AuthScope.CHAT_EDIT, AuthScope.USER_READ_CHAT, AuthScope.USER_WRITE_CHAT]
@@ -184,6 +186,78 @@ SCREENSHOT_TOOL_DECLARATION = {
         "required": []
     }
 }
+
+# Gemini tool declaration for web search
+WEB_SEARCH_TOOL_DECLARATION = {
+    "name": "web_search",
+    "description": "Search the web for current information, facts, news, or any topic not in your knowledge base. Use this when users ask about recent events, current information, specific facts, or anything you don't know. Provide a single search keyword or term.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "The search query to look up on the web. Be specific and clear. Prefer a single word, keyword or term."
+            },
+        },
+        "required": ["query"]
+    }
+}
+
+
+def perform_web_search(query: str, num_results: int = 1) -> dict:
+    """Perform a Google Custom Search and return results.
+
+    Returns a dict with success status, results list, and any error message.
+    Each result contains: title, link, snippet
+    """
+    import requests
+
+    if not GOOGLE_SEARCH_API_KEY or not GOOGLE_SEARCH_ENGINE_ID:
+        return {
+            "success": False,
+            "error": "Google Search API credentials not configured",
+            "results": []
+        }
+
+    # Validate num_results
+    num_results = max(1, min(10, num_results))  # Clamp between 1-10
+
+    try:
+        url = "https://www.googleapis.com/customsearch/v1"
+        params = {
+            "key": GOOGLE_SEARCH_API_KEY,
+            "cx": GOOGLE_SEARCH_ENGINE_ID,
+            "q": query,
+            "num": num_results
+        }
+
+        response = requests.get(url, params=params, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+
+        # Extract search results
+        results = []
+        if "items" in data:
+            for item in data["items"]:
+                results.append({
+                    "title": item.get("title", ""),
+                    "link": item.get("link", ""),
+                    "snippet": item.get("snippet", "")
+                })
+
+        print(f"✓ Web search completed: {len(results)} results for '{query}'")
+        return {
+            "success": True,
+            "results": results,
+            "error": None
+        }
+
+    except requests.exceptions.Timeout:
+        return {"success": False, "error": "Search request timed out", "results": []}
+    except requests.exceptions.RequestException as e:
+        return {"success": False, "error": f"Search failed: {str(e)}", "results": []}
+    except Exception as e:
+        return {"success": False, "error": f"Unexpected error: {str(e)}", "results": []}
 
 
 def init_database() -> None:
@@ -619,15 +693,18 @@ def get_gemini_response(channel: str, user_id: str, user_name: str, message: str
         else:
             full_prompt = user_prompt
 
-        # 1. Define custom screenshot tool
-        custom_tool = types.Tool(function_declarations=[SCREENSHOT_TOOL_DECLARATION])
+        # 1. Define custom tools
+        custom_tools = types.Tool(function_declarations=[
+            SCREENSHOT_TOOL_DECLARATION,
+            WEB_SEARCH_TOOL_DECLARATION
+        ])
 
         print(f"[Gemini Prompt]\n{full_prompt}\n")
 
         # Build conversation messages
         messages = [types.Content(role="user", parts=[types.Part(text=full_prompt)])]
 
-        # Initial request with both tools
+        # Initial request with all tools
         response = client.models.generate_content(
             model=GEMINI_MODEL,
             contents=messages,
@@ -635,7 +712,7 @@ def get_gemini_response(channel: str, user_id: str, user_name: str, message: str
                 system_instruction=SYSTEM_PROMPT,
                 max_output_tokens=400,
                 temperature=0.7,
-                tools=[custom_tool],  # Pass both tools
+                tools=[custom_tools],  # Pass all tools
                 automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
                 thinking_config=types.ThinkingConfig(thinking_level="low")
             )
@@ -664,12 +741,12 @@ def handle_gemini_response(client, messages: list, response) -> str:
                 function_call = part.function_call
                 print(f"[Gemini Tool Call] {function_call.name}")
 
-                # Execute the function
+                # Add assistant's function call to messages
+                messages.append(response.candidates[0].content)
+
+                # Execute the function based on name
                 if function_call.name == "capture_stream_screenshot":
                     result = capture_stream_screenshot()
-
-                    # Add assistant's function call to messages
-                    messages.append(response.candidates[0].content)
 
                     if result["success"]:
                         print(f"[Tool Result] Screenshot captured: {result['file_path']}")
@@ -687,19 +764,50 @@ def handle_gemini_response(client, messages: list, response) -> str:
                             parts=[types.Part(text=f"(Screenshot capture failed: {result['error']})")]
                         ))
 
-                    # Get final response
-                    final_response = client.models.generate_content(
-                        model=GEMINI_MODEL,
-                        contents=messages,
-                        config=types.GenerateContentConfig(
-                            system_instruction=SYSTEM_PROMPT,
-                            max_output_tokens=400,
-                            temperature=0.7,
-                            thinking_config=types.ThinkingConfig(thinking_level="low")
-                        )
-                    )
+                elif function_call.name == "web_search":
+                    # Extract parameters
+                    query = function_call.args.get("query", "")
 
-                    return final_response.text.strip() if final_response.text else "Screenshot captured!"
+                    print(f"[Gemini] Searching web for: {query}")
+                    result = perform_web_search(query)
+
+                    if result["success"]:
+                        # Format search results as text
+                        if result["results"]:
+                            results_text = f"Search results for '{query}':\n\n"
+                            for i, item in enumerate(result["results"], 1):
+                                results_text += f"{i}. {item['title']}\n"
+                                results_text += f"   {item['snippet']}\n"
+                            print(f"[Tool Result] Found {len(result['results'])} results")
+                        else:
+                            results_text = f"No search results found for '{query}'."
+                            print(f"[Tool Result] No results found")
+
+                        # Add search results to messages
+                        messages.append(types.Content(
+                            role="user",
+                            parts=[types.Part(text=results_text)]
+                        ))
+                    else:
+                        print(f"[Tool Result] Search failed: {result['error']}")
+                        messages.append(types.Content(
+                            role="user",
+                            parts=[types.Part(text=f"(Web search failed: {result['error']})")]
+                        ))
+
+                # Get final response after tool execution
+                final_response = client.models.generate_content(
+                    model=GEMINI_MODEL,
+                    contents=messages,
+                    config=types.GenerateContentConfig(
+                        system_instruction=SYSTEM_PROMPT,
+                        max_output_tokens=400,
+                        temperature=0.7,
+                        thinking_config=types.ThinkingConfig(thinking_level="low")
+                    )
+                )
+
+                return final_response.text.strip() if final_response.text else "Done!"
 
     # No function call, return regular text
     return response.text.strip() if response.text else "I couldn't generate a response."
