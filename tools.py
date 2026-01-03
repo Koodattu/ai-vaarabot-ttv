@@ -106,7 +106,10 @@ def detect_ad_text_in_screenshot(screenshot_path: str) -> bool:
 
 
 async def wait_for_ad_completion(channel: str, initial_screenshot_path: str, msg_callback=None) -> dict:
-    """Poll the stream until ads are done or timeout is reached.
+    """Poll the stream with a continuous ffmpeg process until ads are done or timeout is reached.
+
+    This spawns a continuous ffmpeg stream that outputs screenshots at regular intervals.
+    The continuous streaming helps "burn through" the ads.
 
     Args:
         channel: Twitch channel name
@@ -116,51 +119,171 @@ async def wait_for_ad_completion(channel: str, initial_screenshot_path: str, msg
     Returns:
         Dict with success status and final screenshot path or error
     """
-    print(f"[Ad Detection] Starting ad polling for channel: {channel}")
+    print(f"[Ad Detection] Starting continuous stream ad polling for channel: {channel}")
 
-    start_time = time.time()
-    check_count = 0
+    channel_url = f"https://www.twitch.tv/{channel}"
+    ffmpeg_process = None
 
-    while True:
-        elapsed = time.time() - start_time
+    try:
+        # Get stream URL via streamlink with ad filtering
+        session = Streamlink()
+        plugin_name, plugin_class, resolved_url = session.resolve_url(channel_url)
 
-        # Check if we've exceeded the maximum wait time
-        if elapsed > AD_DETECTION_MAX_WAIT:
-            print(f"[Ad Detection] Timeout after {AD_DETECTION_MAX_WAIT}s")
+        # Create options with OAuth token if available
+        options = Options()
+        options.set("disable-ads", True)
+        options.set("low-latency", True)
+        if STREAMLINK_OAUTH_TOKEN:
+            options.set("api-header", [("Authorization", f"OAuth {STREAMLINK_OAUTH_TOKEN}")])
+
+        plugin = plugin_class(session, resolved_url, options)
+        streams = plugin.streams()
+
+        if not streams:
+            print(f"[Ad Detection] Could not get stream data")
             return {
                 "success": False,
-                "error": "Ad detection timeout - proceeding anyway",
+                "error": "Could not get stream data for ad polling",
                 "file_path": None,
                 "timed_out": True
             }
 
-        # Wait before next check
-        await asyncio.sleep(AD_DETECTION_CHECK_INTERVAL)
-        check_count += 1
-
-        print(f"[Ad Detection] Check #{check_count} at {elapsed:.1f}s")
-
-        # Capture a new screenshot (skip live check since we know stream is live)
-        screenshot_result = await capture_stream_screenshot(channel, skip_live_check=True)
-
-        if not screenshot_result["success"]:
-            print(f"[Ad Detection] Screenshot failed during polling: {screenshot_result['error']}")
-            continue
-
-        # Check if ads are still present
-        has_ads = detect_ad_text_in_screenshot(screenshot_result["file_path"])
-
-        if not has_ads:
-            print(f"[Ad Detection] Ads cleared after {elapsed:.1f}s and {check_count} checks")
+        # Get lower quality stream for ad detection (save bandwidth)
+        stream_url = streams.get('360p') or streams.get('480p') or streams.get('worst') or streams.get('best')
+        if not stream_url:
+            print(f"[Ad Detection] No suitable stream quality found")
             return {
-                "success": True,
-                "file_path": screenshot_result["file_path"],
-                "error": None,
-                "timed_out": False,
-                "wait_time": elapsed
+                "success": False,
+                "error": "No suitable stream quality found",
+                "file_path": None,
+                "timed_out": True
             }
 
-        print(f"[Ad Detection] Still showing ads...")
+        stream_url = stream_url.url
+
+        # Create pattern for output files
+        timestamp = int(time.time())
+        output_pattern = SCREENSHOT_PATH / f"ad_check_{timestamp}_%03d.jpg"
+
+        # Calculate FPS for screenshot output based on check interval
+        # We want one frame every AD_DETECTION_CHECK_INTERVAL seconds
+        fps_value = f"1/{int(AD_DETECTION_CHECK_INTERVAL)}"  # e.g., "1/5" for 1 frame every 5 seconds
+
+        # Spawn continuous ffmpeg process that streams and outputs frames
+        # -vf fps=1/N outputs exactly 1 frame every N seconds
+        # -q:v 5 lower quality for faster processing during ad detection
+        # -start_number 1 starts numbering from 001
+        command = [
+            'ffmpeg',
+            '-i', stream_url,
+            '-vf', f'fps={fps_value}',  # Output 1 frame every N seconds
+            '-q:v', '5',  # Lower quality for ad detection
+            '-start_number', '1',
+            str(output_pattern),
+            '-y'
+        ]
+
+        print(f"[Ad Detection] Starting continuous ffmpeg stream (1 frame every {AD_DETECTION_CHECK_INTERVAL}s)")
+
+        # Start ffmpeg process in background
+        ffmpeg_process = subprocess.Popen(
+            command,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL
+        )
+
+        start_time = time.time()
+        check_count = 0
+        last_screenshot_path = None
+
+        # Monitor for new screenshots
+        while True:
+            elapsed = time.time() - start_time
+
+            # Check if we've exceeded the maximum wait time
+            if elapsed > AD_DETECTION_MAX_WAIT:
+                print(f"[Ad Detection] Timeout after {AD_DETECTION_MAX_WAIT}s")
+                return {
+                    "success": False,
+                    "error": "Ad detection timeout - proceeding anyway",
+                    "file_path": last_screenshot_path,
+                    "timed_out": True
+                }
+
+            # Check if ffmpeg process died
+            if ffmpeg_process.poll() is not None:
+                print(f"[Ad Detection] FFmpeg process ended unexpectedly")
+                return {
+                    "success": False,
+                    "error": "Stream process ended unexpectedly",
+                    "file_path": last_screenshot_path,
+                    "timed_out": True
+                }
+
+            # Wait for next interval
+            await asyncio.sleep(AD_DETECTION_CHECK_INTERVAL)
+            check_count += 1
+
+            # Look for the latest screenshot file
+            # FFmpeg outputs files with incrementing numbers
+            expected_file = SCREENSHOT_PATH / f"ad_check_{timestamp}_{check_count:03d}.jpg"
+
+            # Give ffmpeg a moment to finish writing the file
+            await asyncio.sleep(0.5)
+
+            if not expected_file.exists():
+                print(f"[Ad Detection] Waiting for screenshot file: {expected_file.name}")
+                # File might not be ready yet, continue waiting
+                continue
+
+            print(f"[Ad Detection] Check #{check_count} at {elapsed:.1f}s - analyzing {expected_file.name}")
+            last_screenshot_path = str(expected_file)
+
+            # Check if ads are still present
+            has_ads = detect_ad_text_in_screenshot(last_screenshot_path)
+
+            if not has_ads:
+                print(f"[Ad Detection] Ads cleared after {elapsed:.1f}s and {check_count} checks")
+                return {
+                    "success": True,
+                    "file_path": last_screenshot_path,
+                    "error": None,
+                    "timed_out": False,
+                    "wait_time": elapsed
+                }
+
+            print(f"[Ad Detection] Still showing ads...")
+
+    except Exception as e:
+        print(f"[Ad Detection] Error during continuous stream polling: {e}")
+        return {
+            "success": False,
+            "error": f"Error during ad polling: {str(e)}",
+            "file_path": None,
+            "timed_out": True
+        }
+
+    finally:
+        # Clean up: terminate ffmpeg process if still running
+        if ffmpeg_process and ffmpeg_process.poll() is None:
+            print(f"[Ad Detection] Terminating ffmpeg process")
+            ffmpeg_process.terminate()
+            try:
+                ffmpeg_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                print(f"[Ad Detection] Force killing ffmpeg process")
+                ffmpeg_process.kill()
+                ffmpeg_process.wait()
+
+        # Clean up intermediate ad check screenshots (keep only the last one if needed)
+        try:
+            for file in SCREENSHOT_PATH.glob(f"ad_check_{timestamp}_*.jpg"):
+                if last_screenshot_path and file != Path(last_screenshot_path):
+                    file.unlink()
+                    print(f"[Ad Detection] Cleaned up intermediate file: {file.name}")
+        except Exception as e:
+            print(f"[Ad Detection] Error cleaning up files: {e}")
 
 
 async def capture_stream_screenshot(channel: str = TWITCH_CHANNEL, skip_live_check: bool = False) -> dict:
