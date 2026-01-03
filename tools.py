@@ -335,6 +335,9 @@ async def capture_stream_screenshot(channel: str = TWITCH_CHANNEL, skip_live_che
         # Stream is live, proceed with screenshot capture
         print(f"✓ Stream '{channel}' is LIVE, capturing screenshot...")
     else:
+        # Still fetch stream info even if skipping live check for game name
+        print(f"[Stream Check] Fetching stream info for '{channel}'...")
+        stream_status = await check_stream_status(channel)
         print(f"✓ Stream '{channel}' is LIVE, capturing screenshot...")
 
     channel_url = f"https://www.twitch.tv/{channel}"

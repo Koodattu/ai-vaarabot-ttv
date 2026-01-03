@@ -45,7 +45,7 @@ USER_TIMEOUT_SECONDS = float(os.getenv("USER_TIMEOUT_SECONDS", "5"))
 MAX_MESSAGES_PER_HOUR = int(os.getenv("MAX_MESSAGES_PER_HOUR", "10"))
 
 # Ad Detection Configuration
-AD_DETECTION_ENABLED = os.getenv("AD_DETECTION_ENABLED", "true").lower() == "true"
+AD_DETECTION_ENABLED = os.getenv("AD_DETECTION_ENABLED", "false").lower() == "true"
 AD_DETECTION_CHECK_INTERVAL = float(os.getenv("AD_DETECTION_CHECK_INTERVAL", "5.0"))  # Check every 5 seconds
 AD_DETECTION_MAX_WAIT = float(os.getenv("AD_DETECTION_MAX_WAIT", "120.0"))  # Max 30 seconds wait
 

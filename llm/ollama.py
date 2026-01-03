@@ -143,15 +143,23 @@ class OllamaLLM(BaseLLM):
 
                         print(f"[Ollama] Screenshot captured: {result['file_path']}")
 
+                        # Extract game name from stream info
+                        game_info = ""
+                        if result.get("stream_info") and result["stream_info"].get("game_name"):
+                            game_name = result["stream_info"]["game_name"]
+                            game_info = f"\n\nCurrent game being played: {game_name}"
+                            print(f"[Ollama] Game being played: {game_name}")
+
                         # Diverging path based on vision support
                         if OLLAMA_MODEL_SUPPORTS_VISION:
                             # Model supports images - send image directly
                             print("[Ollama] Main model supports vision, sending image directly...")
+                            prompt_with_game = full_prompt + game_info
                             second_response = self.client.chat(
                                 model=OLLAMA_MODEL,
                                 messages=[
                                     {'role': 'system', 'content': SYSTEM_PROMPT},
-                                    {'role': 'user', 'content': full_prompt, 'images': [result["file_path"]]}
+                                    {'role': 'user', 'content': prompt_with_game, 'images': [result["file_path"]]}
                                 ],
                                 options={'temperature': 0.7}
                             )
@@ -165,7 +173,7 @@ class OllamaLLM(BaseLLM):
                                 print(f"[Ollama] Vision model failed: {e}")
                                 image_description = f"(Failed to analyze screenshot: {e})"
 
-                            second_prompt = full_prompt + f"\n\n=== STREAM SCREENSHOT ANALYSIS ===\n{image_description}"
+                            second_prompt = full_prompt + f"\n\n=== STREAM SCREENSHOT ANALYSIS ===\n{image_description}" + game_info
                             second_response = self.client.chat(
                                 model=OLLAMA_MODEL,
                                 messages=[

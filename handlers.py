@@ -45,6 +45,15 @@ class ChatHandlers:
         user_id = msg.user.id
         user_name = msg.user.display_name
         channel = msg.room.name
+        is_vip = msg.user.vip
+        is_mod = msg.user.mod
+
+        # Format username with badge for storage
+        formatted_user_name = user_name
+        if is_mod:
+            formatted_user_name = f"[MOD] {user_name}"
+        elif is_vip:
+            formatted_user_name = f"[VIP] {user_name}"
 
         # Ignore our own messages
         if msg.user.name.lower() == self.bot_username:
@@ -66,19 +75,19 @@ class ChatHandlers:
 
         if not is_mentioned and not is_reply_to_bot:
             # Store message but don't respond
-            self.database.store_message(channel, user_id, user_name, message_text, is_bot=False)
+            self.database.store_message(channel, user_id, formatted_user_name, message_text, is_bot=False)
             return
 
         # Check cooldown
         if self.rate_limiter.is_user_on_cooldown(user_id):
             print(f"[Cooldown] {user_name} is on cooldown")
-            self.database.store_message(channel, user_id, user_name, message_text, is_bot=False)
+            self.database.store_message(channel, user_id, formatted_user_name, message_text, is_bot=False)
             return
 
         # Check hourly rate limit
         if MAX_MESSAGES_PER_HOUR > 0 and self.rate_limiter.is_user_rate_limited(user_id):
             print(f"[Rate Limited] {user_name} has exceeded {MAX_MESSAGES_PER_HOUR} messages/hour")
-            self.database.store_message(channel, user_id, user_name, message_text, is_bot=False)
+            self.database.store_message(channel, user_id, formatted_user_name, message_text, is_bot=False)
             return
 
         # Remove the mention from the message
@@ -89,7 +98,7 @@ class ChatHandlers:
         if not clean_message:
             clean_message = "Hello!"
 
-        print(f"\n[{channel}] {user_name}: {message_text}")
+        print(f"\n[{channel}] {formatted_user_name}: {message_text}")
 
         # Create callback for sending intermediate messages (e.g., ad notifications)
         async def send_chat_message(text: str):
@@ -108,7 +117,7 @@ class ChatHandlers:
         response = await self.llm_provider.get_response(channel, user_id, user_name, clean_message, self.database, msg_callback=send_chat_message)
 
         # Now store the user's message (after context was built without it)
-        self.database.store_message(channel, user_id, user_name, message_text, is_bot=False)
+        self.database.store_message(channel, user_id, formatted_user_name, message_text, is_bot=False)
 
         # Truncate if too long for Twitch (500 char limit)
         if len(response) > 480:

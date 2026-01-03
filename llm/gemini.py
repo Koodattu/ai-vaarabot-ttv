@@ -156,6 +156,8 @@ class GeminiLLM(BaseLLM):
                 with open(screenshot_result["file_path"], 'rb') as f:
                     screenshot_data = f.read()
                 result["screenshot_data"] = screenshot_data
+                # Store stream info (including game name)
+                result["stream_info"] = screenshot_result.get("stream_info")
 
                 # Step 2: Generate enriched query using screenshot
                 enriched_query = self._generate_enriched_query(user_message, screenshot_data)
@@ -264,6 +266,8 @@ Content:
                     # Read the image
                     with open(screenshot_result["file_path"], 'rb') as f:
                         result["screenshot_data"] = f.read()
+                    # Store stream info (including game name)
+                    result["stream_info"] = screenshot_result.get("stream_info")
                 else:
                     print(f"[Tool Result] Screenshot failed: {screenshot_result['error']}")
                     # Store error info to pass to LLM
@@ -451,6 +455,12 @@ Which result is most relevant to answer the user's question? Reply with only the
                 mime_type='image/jpeg'
             )
             parts.append(image_part)
+
+            # Add game name if available
+            if tool_results.get("stream_info") and tool_results["stream_info"].get("game_name"):
+                game_name = tool_results["stream_info"]["game_name"]
+                print(f"[Gemini] Game being played: {game_name}")
+                parts.append(types.Part(text=f"\n\nCurrent game being played: {game_name}"))
 
         # Add screenshot error if screenshot was attempted but failed
         if tool_results.get("screenshot_error"):
