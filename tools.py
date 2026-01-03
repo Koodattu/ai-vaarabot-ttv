@@ -21,12 +21,15 @@ def init_screenshots_dir() -> None:
     print(f"✓ Screenshots directory: {SCREENSHOT_PATH}")
 
 
-def capture_stream_screenshot() -> dict:
+def capture_stream_screenshot(channel: str = TWITCH_CHANNEL) -> dict:
     """Capture a screenshot from the Twitch stream using streamlink + ffmpeg.
+
+    Args:
+        channel: Twitch channel name to capture from. Defaults to TWITCH_CHANNEL from config.
 
     Returns a dict with success status, file path, and any error message.
     """
-    channel_url = f"https://www.twitch.tv/{TWITCH_CHANNEL}"
+    channel_url = f"https://www.twitch.tv/{channel}"
     timestamp = int(time.time())
     output_file = SCREENSHOT_PATH / f"screenshot_{timestamp}.jpg"
 
@@ -231,10 +234,15 @@ def scrape_website(url: str) -> dict:
 # Tool declarations for Gemini
 GEMINI_SCREENSHOT_TOOL = {
     "name": "capture_stream_screenshot",
-    "description": "Captures a screenshot of the current Twitch livestream. Use this when a user asks to see what's happening on stream, wants to know what's on screen, or asks about the current stream content.",
+    "description": f"Captures a screenshot of a Twitch livestream. Use this when a user asks to see what's happening on stream, wants to know what's on screen, or asks about the current stream content. The default channel is '{TWITCH_CHANNEL}' (most of the time use this default unless the user specifically asks about a different channel).",
     "parameters": {
         "type": "object",
-        "properties": {},
+        "properties": {
+            "channel": {
+                "type": "string",
+                "description": f"The Twitch channel name to capture screenshot from. Defaults to '{TWITCH_CHANNEL}' if not specified."
+            }
+        },
         "required": []
     }
 }
@@ -259,10 +267,15 @@ OLLAMA_SCREENSHOT_TOOL = {
     "type": "function",
     "function": {
         "name": "capture_stream_screenshot",
-        "description": "Captures a screenshot of the current Twitch livestream. Use this when a user asks to see what's happening on stream, wants to know what's on screen, or asks about the current stream content.",
+        "description": f"Captures a screenshot of a Twitch livestream. Use this when a user asks to see what's happening on stream, wants to know what's on screen, or asks about the current stream content. The default channel is '{TWITCH_CHANNEL}' (most of the time use this default unless the user specifically asks about a different channel).",
         "parameters": {
             "type": "object",
-            "properties": {},
+            "properties": {
+                "channel": {
+                    "type": "string",
+                    "description": f"The Twitch channel name to capture screenshot from. Defaults to '{TWITCH_CHANNEL}' if not specified."
+                }
+            },
             "required": []
         }
     }

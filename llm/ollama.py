@@ -95,8 +95,15 @@ class OllamaLLM(BaseLLM):
 
                     # Handle screenshot tool
                     if tool_name == "capture_stream_screenshot":
-                        print("[Ollama] Capturing screenshot...")
-                        result = capture_stream_screenshot()
+                        # Extract channel parameter if provided
+                        channel = tool_call.function.arguments.get("channel") if hasattr(tool_call.function, 'arguments') and tool_call.function.arguments else None
+
+                        if channel:
+                            print(f"[Ollama] Capturing screenshot from channel: {channel}...")
+                            result = capture_stream_screenshot(channel=channel)
+                        else:
+                            print("[Ollama] Capturing screenshot from default channel...")
+                            result = capture_stream_screenshot()
 
                         if not result["success"]:
                             print(f"[Ollama] Screenshot failed: {result['error']}")

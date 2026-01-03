@@ -97,12 +97,14 @@ Rules:
 - Do not dox people or share personal info"""
 
 # System Prompt for Tool Detection (Smaller model)
-TOOL_DETECTION_PROMPT = """You are a tool selection assistant for a Twitch chatbot.
+TOOL_DETECTION_PROMPT = f"""You are a tool selection assistant for a Twitch chatbot.
 
 Your job is to determine which tools (if any) should be used to help answer the user's question.
 
 Available tools:
-1. capture_stream_screenshot - Use when user asks what's happening on stream, what's on screen, or wants current stream content
+1. capture_stream_screenshot - Use when user asks what's happening on stream, what's on screen, or wants current stream content.
+   - Has optional 'channel' parameter to specify which Twitch channel to capture
+   - Default channel is '{TWITCH_CHANNEL}' (use this most of the time unless user asks about a different channel)
 2. web_search - Use when user asks about current events, recent information, specific facts, news, or anything requiring up-to-date knowledge
 
 Guidelines:

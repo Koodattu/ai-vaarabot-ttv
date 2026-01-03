@@ -120,7 +120,15 @@ class GeminiLLM(BaseLLM):
 
                     # Execute the function based on name
                     if function_call.name == "capture_stream_screenshot":
-                        screenshot_result = capture_stream_screenshot()
+                        # Extract channel parameter if provided
+                        channel = function_call.args.get("channel") if function_call.args else None
+
+                        if channel:
+                            print(f"[Gemini] Capturing screenshot from channel: {channel}")
+                            screenshot_result = capture_stream_screenshot(channel=channel)
+                        else:
+                            print(f"[Gemini] Capturing screenshot from default channel")
+                            screenshot_result = capture_stream_screenshot()
 
                         if screenshot_result["success"]:
                             print(f"[Tool Result] Screenshot captured: {screenshot_result['file_path']}")
