@@ -5,8 +5,8 @@ Gemini LLM implementation with tool support.
 from google import genai
 from google.genai import types
 
-from config import GEMINI_API_KEY, GEMINI_MODEL, GEMINI_SMALLER_MODEL, SYSTEM_PROMPT, TOOL_DETECTION_PROMPT
-from tools import capture_stream_screenshot, perform_web_search, GEMINI_SCREENSHOT_TOOL, GEMINI_WEB_SEARCH_TOOL
+from config import GEMINI_API_KEY, GEMINI_MODEL, GEMINI_SMALLER_MODEL, SYSTEM_PROMPT, TOOL_DETECTION_PROMPT, WEBSITE_SELECTION_PROMPT
+from tools import capture_stream_screenshot, perform_web_search, scrape_website, GEMINI_SCREENSHOT_TOOL, GEMINI_WEB_SEARCH_TOOL
 from .base import BaseLLM
 
 
@@ -56,7 +56,7 @@ class GeminiLLM(BaseLLM):
             print(f"[Gemini Prompt]\n{full_prompt}\n")
 
             # STEP 1: Use smaller model to detect which tools to use
-            tool_results = self._detect_and_execute_tools(full_prompt)
+            tool_results = self._detect_and_execute_tools(full_prompt, user_prompt)
 
             # STEP 2: Use larger model to generate final response
             final_response = self._generate_final_response(full_prompt, tool_results)
@@ -67,8 +67,12 @@ class GeminiLLM(BaseLLM):
             print(f"Gemini error: {e}")
             return "Sorry, I couldn't process that right now."
 
-    def _detect_and_execute_tools(self, user_prompt: str) -> dict:
+    def _detect_and_execute_tools(self, full_prompt: str, user_prompt: str) -> dict:
         """Use smaller model to detect tools and execute them.
+
+        Args:
+            full_prompt: The complete prompt with chat history context
+            user_prompt: Just the user's message (for website selection context)
 
         Returns dict with:
         - screenshot_data: bytes or None
@@ -86,7 +90,7 @@ class GeminiLLM(BaseLLM):
         ])
 
         # Build messages for tool detection
-        messages = [types.Content(role="user", parts=[types.Part(text=user_prompt)])]
+        messages = [types.Content(role="user", parts=[types.Part(text=full_prompt)])]
 
         print(f"[Gemini] Using {GEMINI_SMALLER_MODEL} for tool detection...")
 
@@ -100,7 +104,7 @@ class GeminiLLM(BaseLLM):
                 temperature=0.3,  # Lower temperature for more deterministic tool selection
                 tools=[custom_tools],
                 automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
-                thinking_config=types.ThinkingConfig(thinking_level="low")
+                #thinking_config=types.ThinkingConfig(thinking_level="low")
             )
         )
 
@@ -133,22 +137,112 @@ class GeminiLLM(BaseLLM):
                         print(f"[Gemini] Searching web for: {query}")
                         search_result = perform_web_search(query)
 
-                        if search_result["success"]:
-                            # Format search results as text
-                            if search_result["results"]:
-                                results_text = f"Search results for '{query}':\n\n"
-                                for i, item in enumerate(search_result["results"], 1):
-                                    results_text += f"{i}. {item['title']}\n"
-                                    results_text += f"   {item['snippet']}\n"
-                                result["search_results"] = results_text
-                                print(f"[Tool Result] Found {len(search_result['results'])} results")
+                        if search_result["success"] and search_result["results"]:
+                            # STEP 1: Format search results for website selection
+                            results_list = []
+                            for i, item in enumerate(search_result["results"], 1):
+                                results_list.append({
+                                    "number": i,
+                                    "title": item["title"],
+                                    "snippet": item["snippet"],
+                                    "link": item["link"]
+                                })
+
+                            results_text = f"Web search results for '{query}':\n\n"
+                            for item in results_list:
+                                results_text += f"{item['number']}. {item['title']}\n"
+                                results_text += f"   {item['snippet']}\n\n"
+
+                            print(f"[Tool Result] Found {len(results_list)} results")
+
+                            # STEP 2: Ask smaller model to select which website to scrape
+                            selected_index = self._select_website(user_prompt, results_text, results_list)
+
+                            if selected_index is not None:
+                                selected_url = results_list[selected_index]["link"]
+                                print(f"[Gemini] Selected result #{selected_index + 1}: {selected_url}")
+
+                                # STEP 3: Scrape the selected website
+                                scrape_result = scrape_website(selected_url)
+
+                                if scrape_result["success"]:
+                                    # Format final result with scraped content
+                                    result["search_results"] = f"""Web search for '{query}':
+
+Selected source: {scrape_result['url']}
+Title: {results_list[selected_index]['title']}
+
+Content:
+{scrape_result['text']}"""
+                                    print(f"[Tool Result] Successfully scraped {len(scrape_result['text'])} characters")
+                                else:
+                                    print(f"[Tool Result] Scraping failed: {scrape_result['error']}")
+                                    # Fallback to search snippets
+                                    result["search_results"] = results_text
                             else:
+                                print(f"[Tool Result] Website selection failed, using search snippets")
+                                result["search_results"] = results_text
+                        else:
+                            if search_result["success"]:
                                 result["search_results"] = f"No search results found for '{query}'."
                                 print(f"[Tool Result] No results found")
-                        else:
-                            print(f"[Tool Result] Search failed: {search_result['error']}")
+                            else:
+                                print(f"[Tool Result] Search failed: {search_result['error']}")
 
         return result
+
+    def _select_website(self, user_message: str, results_text: str, results_list: list) -> int | None:
+        """Use smaller model to select which website to scrape.
+
+        Args:
+            user_message: The user's original question
+            results_text: Formatted search results
+            results_list: List of result dicts
+
+        Returns:
+            Index (0-based) of selected result, or None if selection failed
+        """
+        print(f"[Gemini] Using {GEMINI_SMALLER_MODEL} for website selection...")
+
+        # Create selection prompt
+        selection_prompt = f"""User question: {user_message}
+
+{results_text}
+
+Which result is most relevant to answer the user's question? Reply with only the number (1-{len(results_list)})."""
+
+        # Request website selection
+        response = self.client.models.generate_content(
+            model=GEMINI_SMALLER_MODEL,
+            contents=selection_prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=WEBSITE_SELECTION_PROMPT,
+                max_output_tokens=10,
+                temperature=0.1,  # Very low temperature for deterministic selection
+                #thinking_config=types.ThinkingConfig(thinking_level="low")
+            )
+        )
+
+        # Parse the response to get the number
+        try:
+            response_text = response.text.strip()
+            # Extract first digit from response
+            import re
+            match = re.search(r'\d+', response_text)
+            if match:
+                selected_num = int(match.group())
+                if 1 <= selected_num <= len(results_list):
+                    print(f"[Gemini] Website selection: #{selected_num}")
+                    return selected_num - 1  # Convert to 0-based index
+                else:
+                    print(f"[Gemini] Invalid selection number: {selected_num}")
+                    return 0  # Default to first result
+            else:
+                print(f"[Gemini] No number found in response: {response_text}")
+                return 0  # Default to first result
+        except Exception as e:
+            print(f"[Gemini] Error parsing website selection: {e}")
+            return 0  # Default to first result
 
     def _generate_final_response(self, user_prompt: str, tool_results: dict) -> str:
         """Use larger model to generate final response with tool results.
@@ -184,7 +278,7 @@ class GeminiLLM(BaseLLM):
             contents=messages,
             config=types.GenerateContentConfig(
                 system_instruction=SYSTEM_PROMPT,
-                max_output_tokens=400,
+                max_output_tokens=800,
                 temperature=0.7,
                 thinking_config=types.ThinkingConfig(thinking_level="low")
             )

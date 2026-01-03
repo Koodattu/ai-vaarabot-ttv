@@ -5,3 +5,5 @@ chromadb
 ollama
 streamlink
 requests
+beautifulsoup4
+cloudscraper
