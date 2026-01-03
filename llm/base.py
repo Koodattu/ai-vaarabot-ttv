@@ -9,7 +9,7 @@ class BaseLLM(ABC):
     """Abstract base class for LLM implementations."""
 
     @abstractmethod
-    def get_response(self, channel: str, user_id: str, user_name: str, message: str, database) -> str:
+    async def get_response(self, channel: str, user_id: str, user_name: str, message: str, database, msg_callback=None) -> str:
         """Get response from the LLM with context from database.
 
         Args:
@@ -18,6 +18,7 @@ class BaseLLM(ABC):
             user_name: User's display name
             message: User's message
             database: Database instance for context retrieval
+            msg_callback: Optional async callback to send intermediate messages (e.g., for ad notifications)
 
         Returns:
             str: The LLM's response
@@ -30,5 +31,17 @@ class BaseLLM(ABC):
 
         Returns:
             bool: True if test successful, False otherwise
+        """
+        pass
+
+    @abstractmethod
+    def get_simple_response(self, prompt: str) -> str:
+        """Get a simple response without context or tools.
+
+        Args:
+            prompt: Simple prompt string
+
+        Returns:
+            str: The LLM's response
         """
         pass

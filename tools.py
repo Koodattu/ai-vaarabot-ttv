@@ -6,13 +6,17 @@ Includes screenshot capture, web search, and tool declarations for LLMs.
 import time
 import subprocess
 import requests
+import asyncio
 from pathlib import Path
 from streamlink.session import Streamlink
 from streamlink.options import Options
 from bs4 import BeautifulSoup
 import cloudscraper
+from PIL import Image
+import pytesseract
 
-from config import SCREENSHOT_PATH, TWITCH_CHANNEL, GOOGLE_SEARCH_API_KEY, GOOGLE_SEARCH_ENGINE_ID, STREAMLINK_OAUTH_TOKEN
+from config import SCREENSHOT_PATH, TWITCH_CHANNEL, GOOGLE_SEARCH_API_KEY, GOOGLE_SEARCH_ENGINE_ID, STREAMLINK_OAUTH_TOKEN, AD_DETECTION_CHECK_INTERVAL, AD_DETECTION_MAX_WAIT
+from twitch_api import check_stream_status
 
 
 def init_screenshots_dir() -> None:
@@ -21,14 +25,195 @@ def init_screenshots_dir() -> None:
     print(f"✓ Screenshots directory: {SCREENSHOT_PATH}")
 
 
-def capture_stream_screenshot(channel: str = TWITCH_CHANNEL) -> dict:
+def detect_ad_text_in_screenshot(screenshot_path: str) -> bool:
+    """Detect if 'Preparing your stream' text is present in the bottom left 25% of the screenshot.
+
+    Args:
+        screenshot_path: Path to the screenshot image file
+
+    Returns:
+        True if ad text is detected, False otherwise
+    """
+    try:
+        # Open the image
+        img = Image.open(screenshot_path)
+        width, height = img.size
+
+        # Crop to bottom left 25% of the image
+        # Bottom left quarter: left 50% width, bottom 50% height
+        left = 0
+        top = height // 2
+        right = width // 2
+        bottom = height
+
+        cropped_img = img.crop((left, top, right, bottom))
+
+        # Save cropped image for debugging
+        cropped_img.save("debug_cropped.jpg")
+
+        # Perform OCR on the cropped region
+        text = pytesseract.image_to_string(cropped_img, lang='eng').lower()
+
+        # Normalize whitespace: replace newlines and multiple spaces with single space
+        text_normalized = ' '.join(text.split())
+
+        # Also clean up common OCR errors and symbols
+        text_cleaned = text_normalized.replace('—', ' ').replace('_', ' ').replace('|', ' ')
+        text_cleaned = ' '.join(text_cleaned.split())  # Re-normalize after replacements
+
+        # Print extracted text for debugging
+        print(f"[Ad Detection] Extracted text: '{text_cleaned[:100]}'")
+
+        # Strategy 1: Exact phrase matching
+        ad_phrases = [
+            "preparing your stream",
+            "preparing the stream",
+            "stream cleaning",
+            "ads are running",
+            "we're just doing a bit",
+            "bit of stream cleaning",
+            "preparing stream"
+        ]
+
+        if any(phrase in text_cleaned for phrase in ad_phrases):
+            print(f"[Ad Detection] ✓ Exact phrase match found")
+            return True
+
+        # Strategy 2: Key word matching (fallback for bad OCR)
+        # Check if we have the key words that indicate ad screen
+        words_in_text = text_cleaned.split()
+
+        has_preparing = any('prepar' in word for word in words_in_text)
+        has_stream = any('stream' in word or 'steram' in word for word in words_in_text)
+        has_your = any('your' in word or 'you' == word for word in words_in_text)
+
+        # If we have "preparing" + "stream", it's likely an ad
+        if has_preparing and has_stream:
+            print(f"[Ad Detection] ✓ Key word match (preparing + stream)")
+            return True
+
+        # Additional check: "your" + "stream" (common variant)
+        if has_your and has_stream:
+            print(f"[Ad Detection] ✓ Key word match (your + stream)")
+            return True
+
+        print(f"[Ad Detection] ✗ No ad indicators found")
+        return False
+
+    except Exception as e:
+        print(f"[Ad Detection] Error detecting ad text: {e}")
+        return False
+
+
+async def wait_for_ad_completion(channel: str, initial_screenshot_path: str, msg_callback=None) -> dict:
+    """Poll the stream until ads are done or timeout is reached.
+
+    Args:
+        channel: Twitch channel name
+        initial_screenshot_path: Path to the initial screenshot with ads
+        msg_callback: Optional async callback to send user message about ads
+
+    Returns:
+        Dict with success status and final screenshot path or error
+    """
+    print(f"[Ad Detection] Starting ad polling for channel: {channel}")
+
+    start_time = time.time()
+    check_count = 0
+
+    while True:
+        elapsed = time.time() - start_time
+
+        # Check if we've exceeded the maximum wait time
+        if elapsed > AD_DETECTION_MAX_WAIT:
+            print(f"[Ad Detection] Timeout after {AD_DETECTION_MAX_WAIT}s")
+            return {
+                "success": False,
+                "error": "Ad detection timeout - proceeding anyway",
+                "file_path": None,
+                "timed_out": True
+            }
+
+        # Wait before next check
+        await asyncio.sleep(AD_DETECTION_CHECK_INTERVAL)
+        check_count += 1
+
+        print(f"[Ad Detection] Check #{check_count} at {elapsed:.1f}s")
+
+        # Capture a new screenshot (skip live check since we know stream is live)
+        screenshot_result = await capture_stream_screenshot(channel, skip_live_check=True)
+
+        if not screenshot_result["success"]:
+            print(f"[Ad Detection] Screenshot failed during polling: {screenshot_result['error']}")
+            continue
+
+        # Check if ads are still present
+        has_ads = detect_ad_text_in_screenshot(screenshot_result["file_path"])
+
+        if not has_ads:
+            print(f"[Ad Detection] Ads cleared after {elapsed:.1f}s and {check_count} checks")
+            return {
+                "success": True,
+                "file_path": screenshot_result["file_path"],
+                "error": None,
+                "timed_out": False,
+                "wait_time": elapsed
+            }
+
+        print(f"[Ad Detection] Still showing ads...")
+
+
+async def capture_stream_screenshot(channel: str = TWITCH_CHANNEL, skip_live_check: bool = False) -> dict:
     """Capture a screenshot from the Twitch stream using streamlink + ffmpeg.
+
+    First checks if the stream is live before attempting to capture.
+    If stream is offline, returns immediately with stream status info.
 
     Args:
         channel: Twitch channel name to capture from. Defaults to TWITCH_CHANNEL from config.
+        skip_live_check: If True, skips the Twitch API check. Use during ad polling when we already know stream is live.
 
-    Returns a dict with success status, file path, and any error message.
+    Returns a dict with success status, file path, stream status, and any error message.
+    Possible return structures:
+    - Stream offline: {"success": False, "error": "Stream is offline", "is_live": False, "file_path": None}
+    - Stream live with screenshot: {"success": True, "file_path": "path/to/screenshot.jpg", "is_live": True, "error": None}
+    - Error: {"success": False, "error": "error message", "is_live": None, "file_path": None}
     """
+    stream_status = None
+
+    # Only check if stream is live if not skipping (first check or explicit check)
+    if not skip_live_check:
+        print(f"[Stream Check] Checking if '{channel}' is live...")
+
+        # Call async stream check
+        stream_status = await check_stream_status(channel)
+
+        if stream_status["error"]:
+            # Error checking stream status
+            print(f"✗ Error checking stream status: {stream_status['error']}")
+            return {
+                "success": False,
+                "error": f"Could not check stream status: {stream_status['error']}",
+                "is_live": None,
+                "file_path": None
+            }
+
+        if not stream_status["is_live"]:
+            # Stream is offline
+            print(f"✗ Stream '{channel}' is OFFLINE")
+            return {
+                "success": False,
+                "error": f"Stream '{channel}' is currently offline",
+                "is_live": False,
+                "file_path": None,
+                "stream_info": None
+            }
+
+        # Stream is live, proceed with screenshot capture
+        print(f"✓ Stream '{channel}' is LIVE, capturing screenshot...")
+    else:
+        print(f"✓ Stream '{channel}' is LIVE, capturing screenshot...")
+
     channel_url = f"https://www.twitch.tv/{channel}"
     timestamp = int(time.time())
     output_file = SCREENSHOT_PATH / f"screenshot_{timestamp}.jpg"
@@ -49,12 +234,22 @@ def capture_stream_screenshot(channel: str = TWITCH_CHANNEL) -> dict:
         streams = plugin.streams()
 
         if not streams:
-            return {"success": False, "error": "Stream is offline", "file_path": None}
+            return {
+                "success": False,
+                "error": "Could not get stream data (streamlink returned no streams)",
+                "is_live": True,
+                "file_path": None
+            }
 
         # Get best quality stream URL
         stream_url = streams.get('best') or streams.get('720p') or streams.get('480p')
         if not stream_url:
-            return {"success": False, "error": "No suitable stream quality found", "file_path": None}
+            return {
+                "success": False,
+                "error": "No suitable stream quality found",
+                "is_live": True,
+                "file_path": None
+            }
 
         stream_url = stream_url.url
 
@@ -78,14 +273,35 @@ def capture_stream_screenshot(channel: str = TWITCH_CHANNEL) -> dict:
 
         if result.returncode == 0 and output_file.exists():
             print(f"✓ Screenshot saved: {output_file}")
-            return {"success": True, "file_path": str(output_file), "error": None}
+            return {
+                "success": True,
+                "file_path": str(output_file),
+                "is_live": True,
+                "stream_info": stream_status.get("stream_info"),
+                "error": None
+            }
         else:
-            return {"success": False, "error": "FFmpeg failed to capture frame", "file_path": None}
+            return {
+                "success": False,
+                "error": "FFmpeg failed to capture frame",
+                "is_live": True,
+                "file_path": None
+            }
 
     except subprocess.TimeoutExpired:
-        return {"success": False, "error": "Screenshot capture timed out", "file_path": None}
+        return {
+            "success": False,
+            "error": "Screenshot capture timed out",
+            "is_live": True,
+            "file_path": None
+        }
     except Exception as e:
-        return {"success": False, "error": str(e), "file_path": None}
+        return {
+            "success": False,
+            "error": str(e),
+            "is_live": None,
+            "file_path": None
+        }
 
 
 def perform_web_search(query: str, num_results: int = 5, language: str = "lang_en|lang_fi") -> dict:
@@ -231,10 +447,95 @@ def scrape_website(url: str) -> dict:
         return {"success": False, "text": None, "url": url, "error": f"Unexpected error: {str(e)}"}
 
 
+async def capture_screenshot_with_ad_detection(channel: str, llm_provider, simple_prompt: str, user_message: str, msg_callback=None) -> dict:
+    """Capture screenshot with automatic ad detection and waiting.
+
+    This is an async wrapper that:
+    1. Captures initial screenshot
+    2. Checks for ad text in bottom left 25%
+    3. If ads detected, optionally notifies user and polls until ads clear
+    4. Returns final screenshot or falls back after timeout
+
+    Args:
+        channel: Twitch channel name
+        llm_provider: LLM provider to generate ad message
+        simple_prompt: The simple system prompt to use for generating ad message
+        user_message: The user's original message for context
+        msg_callback: Optional async callback to send messages (async function)
+
+    Returns:
+        Dict with success, file_path, and optional ad_wait_info
+    """
+    # Capture initial screenshot
+    initial_result = await capture_stream_screenshot(channel)
+
+    if not initial_result["success"]:
+        return initial_result
+
+    # Check for ads
+    has_ads = detect_ad_text_in_screenshot(initial_result["file_path"])
+
+    if not has_ads:
+        # No ads, return immediately
+        print("[Ad Detection] No ads detected, proceeding normally")
+        return {
+            **initial_result,
+            "ad_wait_info": None
+        }
+
+    # Ads detected!
+    print("[Ad Detection] Pre-roll ads detected")
+
+    # Send user-facing message if callback provided (only once, when first detected)
+    if msg_callback:
+        try:
+            # Generate ad message using LLM with user's context
+            ad_generation_prompt = f"{simple_prompt}\n\nUser's message: \"{user_message}\""
+
+            ad_message = llm_provider.get_simple_response(ad_generation_prompt)
+
+            # Fallback if LLM fails
+            if not ad_message or len(ad_message) > 60:
+                ad_message = "One sec, ads running..."
+
+            await msg_callback(ad_message)
+            print(f"[Ad Detection] Sent user message: {ad_message}")
+        except Exception as e:
+            print(f"[Ad Detection] Failed to send ad message: {e}")
+
+    # Poll for ad completion
+    wait_result = await wait_for_ad_completion(channel, initial_result["file_path"], msg_callback)
+
+    if wait_result["timed_out"]:
+        # Timeout - return with error but indicate we can proceed
+        return {
+            "success": True,  # Still success, we'll use what we have
+            "file_path": initial_result["file_path"],
+            "error": None,
+            "ad_wait_info": {
+                "had_ads": True,
+                "timed_out": True,
+                "wait_time": AD_DETECTION_MAX_WAIT
+            }
+        }
+
+    # Ads cleared successfully
+    return {
+        "success": True,
+        "file_path": wait_result["file_path"],
+        "error": None,
+        "ad_wait_info": {
+            "had_ads": True,
+            "timed_out": False,
+            "wait_time": wait_result.get("wait_time", 0)
+        }
+    }
+
+
 # Tool declarations for Gemini
 GEMINI_SCREENSHOT_TOOL = {
     "name": "capture_stream_screenshot",
-    "description": f"Captures a screenshot of a Twitch livestream. Use this when a user asks to see what's happening on stream, wants to know what's on screen, or asks about the current stream content. The default channel is '{TWITCH_CHANNEL}' (most of the time use this default unless the user specifically asks about a different channel).",
+    "description": f"Captures a screenshot of a Twitch livestream. IMPORTANT: This tool first checks if the stream is live. If the stream is offline, it will return an error message indicating the stream is offline - you should inform the user the stream is not currently live. Use this when a user asks to see what's happening on stream, wants to know what's on screen, or asks about the current stream content. The default channel is '{TWITCH_CHANNEL}' (most of the time use this default unless the user specifically asks about a different channel).",
     "parameters": {
         "type": "object",
         "properties": {
@@ -267,7 +568,7 @@ OLLAMA_SCREENSHOT_TOOL = {
     "type": "function",
     "function": {
         "name": "capture_stream_screenshot",
-        "description": f"Captures a screenshot of a Twitch livestream. Use this when a user asks to see what's happening on stream, wants to know what's on screen, or asks about the current stream content. The default channel is '{TWITCH_CHANNEL}' (most of the time use this default unless the user specifically asks about a different channel).",
+        "description": f"Captures a screenshot of a Twitch livestream. IMPORTANT: This tool first checks if the stream is live. If the stream is offline, it will return an error message indicating the stream is offline - you should inform the user the stream is not currently live. Use this when a user asks to see what's happening on stream, wants to know what's on screen, or asks about the current stream content. The default channel is '{TWITCH_CHANNEL}' (most of the time use this default unless the user specifically asks about a different channel).",
         "parameters": {
             "type": "object",
             "properties": {

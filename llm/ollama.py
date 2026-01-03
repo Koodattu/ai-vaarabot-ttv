@@ -55,7 +55,7 @@ class OllamaLLM(BaseLLM):
         )
         return response.message.content.strip()
 
-    def get_response(self, channel: str, user_id: str, user_name: str, message: str, database) -> str:
+    async def get_response(self, channel: str, user_id: str, user_name: str, message: str, database, msg_callback=None) -> str:
         """Get response from Ollama with RAG context and tool support."""
         try:
             # Build context from database (channel-scoped)
@@ -96,18 +96,35 @@ class OllamaLLM(BaseLLM):
                     # Handle screenshot tool
                     if tool_name == "capture_stream_screenshot":
                         # Extract channel parameter if provided
-                        channel = tool_call.function.arguments.get("channel") if hasattr(tool_call.function, 'arguments') and tool_call.function.arguments else None
+                        target_channel = tool_call.function.arguments.get("channel") if hasattr(tool_call.function, 'arguments') and tool_call.function.arguments else channel
 
-                        if channel:
-                            print(f"[Ollama] Capturing screenshot from channel: {channel}...")
-                            result = capture_stream_screenshot(channel=channel)
+                        print(f"[Ollama] Capturing screenshot from channel: {target_channel}...")
+
+                        # Import ad detection wrapper
+                        from tools import capture_screenshot_with_ad_detection
+                        from config import AD_DETECTION_ENABLED
+
+                        # Use ad detection if enabled
+                        if AD_DETECTION_ENABLED:
+                            from config import AD_WAIT_PROMPT
+                            result = await capture_screenshot_with_ad_detection(
+                                channel=target_channel,
+                                llm_provider=self,
+                                simple_prompt=AD_WAIT_PROMPT,
+                                user_message=message,
+                                msg_callback=msg_callback
+                            )
                         else:
-                            print("[Ollama] Capturing screenshot from default channel...")
-                            result = capture_stream_screenshot()
+                            result = await capture_stream_screenshot(channel=target_channel)
 
                         if not result["success"]:
                             print(f"[Ollama] Screenshot failed: {result['error']}")
-                            error_prompt = full_prompt + f"\n\n(Screenshot capture failed: {result['error']})"
+                            # Build error message, adding context if stream is offline
+                            error_message = result['error']
+                            if result.get("is_live") is False:
+                                error_message = f"The stream is currently offline. {error_message}"
+
+                            error_prompt = full_prompt + f"\n\n(Screenshot capture failed: {error_message})"
                             second_response = self.client.chat(
                                 model=OLLAMA_MODEL,
                                 messages=[
@@ -117,6 +134,12 @@ class OllamaLLM(BaseLLM):
                                 options={'temperature': 0.7}
                             )
                             return second_response.message.content.strip() if second_response.message.content else "Failed to capture screenshot."
+
+                        # Log ad detection info if present
+                        if result.get("ad_wait_info"):
+                            ad_info = result["ad_wait_info"]
+                            if ad_info["had_ads"]:
+                                print(f"[Tool Result] Ad detection: waited {ad_info['wait_time']:.1f}s, timed_out={ad_info['timed_out']}")
 
                         print(f"[Ollama] Screenshot captured: {result['file_path']}")
 
@@ -160,3 +183,16 @@ class OllamaLLM(BaseLLM):
         except Exception as e:
             print(f"Ollama error: {e}")
             return "Sorry, I couldn't process that right now."
+
+    def get_simple_response(self, prompt: str) -> str:
+        """Get a simple response without context or tools."""
+        try:
+            response = self.client.chat(
+                model=OLLAMA_MODEL,
+                messages=[{'role': 'user', 'content': prompt}],
+                options={'temperature': 0.8}
+            )
+            return response.message.content.strip() if response.message.content else ""
+        except Exception as e:
+            print(f"[Ollama Simple Response] Error: {e}")
+            return ""

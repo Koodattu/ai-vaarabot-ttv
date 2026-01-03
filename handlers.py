@@ -91,8 +91,16 @@ class ChatHandlers:
 
         print(f"\n[{channel}] {user_name}: {message_text}")
 
+        # Create callback for sending intermediate messages (e.g., ad notifications)
+        async def send_chat_message(text: str):
+            """Send a message to the chat."""
+            try:
+                await msg.chat.send_message(msg.room.name, text)
+            except Exception as e:
+                print(f"[Callback] Error sending message: {e}")
+
         # Get response from LLM (channel-scoped context) - BEFORE storing current message
-        response = self.llm_provider.get_response(channel, user_id, user_name, clean_message, self.database)
+        response = await self.llm_provider.get_response(channel, user_id, user_name, clean_message, self.database, msg_callback=send_chat_message)
 
         # Now store the user's message (after context was built without it)
         self.database.store_message(channel, user_id, user_name, message_text, is_bot=False)

@@ -209,3 +209,4 @@ tokens.json
 /chroma_db
 *.db
 /screenshots
+debug_cropped.jpg

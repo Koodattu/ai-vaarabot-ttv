@@ -7,3 +7,5 @@ streamlink
 requests
 beautifulsoup4
 cloudscraper
+pytesseract
+Pillow

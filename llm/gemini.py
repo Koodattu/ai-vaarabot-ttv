@@ -34,7 +34,7 @@ class GeminiLLM(BaseLLM):
             print(f"✗ Gemini API test failed: {e}")
             return False
 
-    def get_response(self, channel: str, user_id: str, user_name: str, message: str, database) -> str:
+    async def get_response(self, channel: str, user_id: str, user_name: str, message: str, database, msg_callback=None) -> str:
         """Get response from Gemini with RAG context and two-model tool detection flow."""
         try:
             # Build context from database (channel-scoped)
@@ -56,7 +56,7 @@ class GeminiLLM(BaseLLM):
             print(f"[Gemini Prompt]\n{full_prompt}\n")
 
             # STEP 1: Use smaller model to detect which tools to use
-            tool_results = self._detect_and_execute_tools(full_prompt, user_prompt)
+            tool_results = await self._detect_and_execute_tools(full_prompt, user_prompt, channel, message, msg_callback)
 
             # STEP 2: Use larger model to generate final response
             final_response = self._generate_final_response(full_prompt, tool_results)
@@ -67,20 +67,25 @@ class GeminiLLM(BaseLLM):
             print(f"Gemini error: {e}")
             return "Sorry, I couldn't process that right now."
 
-    def _detect_and_execute_tools(self, full_prompt: str, user_prompt: str) -> dict:
+    async def _detect_and_execute_tools(self, full_prompt: str, user_prompt: str, channel: str, user_message: str, msg_callback=None) -> dict:
         """Use smaller model to detect tools and execute them.
 
         Args:
             full_prompt: The complete prompt with chat history context
             user_prompt: Just the user's message (for website selection context)
+            channel: Twitch channel name for screenshot capture
+            user_message: The user's original message for ad notification context
+            msg_callback: Optional async callback to send intermediate messages
 
         Returns dict with:
         - screenshot_data: bytes or None
         - search_results: str or None
+        - screenshot_error: str or None (error message if screenshot failed)
         """
         result = {
             "screenshot_data": None,
-            "search_results": None
+            "search_results": None,
+            "screenshot_error": None
         }
 
         # Define custom tools
@@ -121,22 +126,43 @@ class GeminiLLM(BaseLLM):
                     # Execute the function based on name
                     if function_call.name == "capture_stream_screenshot":
                         # Extract channel parameter if provided
-                        channel = function_call.args.get("channel") if function_call.args else None
+                        target_channel = function_call.args.get("channel") if function_call.args else channel
 
-                        if channel:
-                            print(f"[Gemini] Capturing screenshot from channel: {channel}")
-                            screenshot_result = capture_stream_screenshot(channel=channel)
+                        print(f"[Gemini] Capturing screenshot from channel: {target_channel}")
+
+                        # Import ad detection wrapper
+                        from tools import capture_screenshot_with_ad_detection
+                        from config import AD_DETECTION_ENABLED
+
+                        # Use ad detection if enabled
+                        if AD_DETECTION_ENABLED:
+                            from config import AD_WAIT_PROMPT
+                            screenshot_result = await capture_screenshot_with_ad_detection(
+                                channel=target_channel,
+                                llm_provider=self,
+                                simple_prompt=AD_WAIT_PROMPT,
+                                user_message=user_message,
+                                msg_callback=msg_callback
+                            )
                         else:
-                            print(f"[Gemini] Capturing screenshot from default channel")
-                            screenshot_result = capture_stream_screenshot()
+                            screenshot_result = await capture_stream_screenshot(channel=target_channel)
 
                         if screenshot_result["success"]:
                             print(f"[Tool Result] Screenshot captured: {screenshot_result['file_path']}")
+                            if screenshot_result.get("ad_wait_info"):
+                                ad_info = screenshot_result["ad_wait_info"]
+                                if ad_info["had_ads"]:
+                                    print(f"[Tool Result] Ad detection: waited {ad_info['wait_time']:.1f}s, timed_out={ad_info['timed_out']}")
                             # Read the image
                             with open(screenshot_result["file_path"], 'rb') as f:
                                 result["screenshot_data"] = f.read()
                         else:
                             print(f"[Tool Result] Screenshot failed: {screenshot_result['error']}")
+                            # Store error info to pass to LLM
+                            result["screenshot_error"] = screenshot_result["error"]
+                            # Also check if stream is offline
+                            if screenshot_result.get("is_live") is False:
+                                result["screenshot_error"] = f"The stream is currently offline. {screenshot_result['error']}"
 
                     elif function_call.name == "web_search":
                         # Extract parameters
@@ -257,7 +283,7 @@ Which result is most relevant to answer the user's question? Reply with only the
 
         Args:
             user_prompt: The original user prompt with context
-            tool_results: Dict containing screenshot_data and search_results
+            tool_results: Dict containing screenshot_data, search_results, and screenshot_error
         """
         print(f"[Gemini] Using {GEMINI_MODEL} for final response generation...")
 
@@ -272,6 +298,11 @@ Which result is most relevant to answer the user's question? Reply with only the
                 mime_type='image/jpeg'
             )
             parts.append(image_part)
+
+        # Add screenshot error if screenshot was attempted but failed
+        if tool_results.get("screenshot_error"):
+            print(f"[Gemini] Adding screenshot error to context: {tool_results['screenshot_error']}")
+            parts.append(types.Part(text=f"\n\n[SCREENSHOT TOOL ERROR]: {tool_results['screenshot_error']}"))
 
         # Add search results if available
         if tool_results["search_results"]:
@@ -293,3 +324,19 @@ Which result is most relevant to answer the user's question? Reply with only the
         )
 
         return response.text.strip() if response.text else "I couldn't generate a response."
+
+    def get_simple_response(self, prompt: str) -> str:
+        """Get a simple response without context or tools."""
+        try:
+            response = self.client.models.generate_content(
+                model=GEMINI_SMALLER_MODEL,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    max_output_tokens=100,
+                    temperature=0.8
+                )
+            )
+            return response.text.strip() if response.text else ""
+        except Exception as e:
+            print(f"[Gemini Simple Response] Error: {e}")
+            return ""

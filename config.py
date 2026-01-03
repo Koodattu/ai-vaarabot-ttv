@@ -44,6 +44,11 @@ TWITCH_CHANNEL = "ishowspeed"  # Channel for screenshots
 USER_TIMEOUT_SECONDS = float(os.getenv("USER_TIMEOUT_SECONDS", "5"))
 MAX_MESSAGES_PER_HOUR = int(os.getenv("MAX_MESSAGES_PER_HOUR", "10"))
 
+# Ad Detection Configuration
+AD_DETECTION_ENABLED = os.getenv("AD_DETECTION_ENABLED", "true").lower() == "true"
+AD_DETECTION_CHECK_INTERVAL = float(os.getenv("AD_DETECTION_CHECK_INTERVAL", "5.0"))  # Check every 5 seconds
+AD_DETECTION_MAX_WAIT = float(os.getenv("AD_DETECTION_MAX_WAIT", "120.0"))  # Max 30 seconds wait
+
 # Context Configuration
 MAX_HISTORY_PER_USER = 10
 RAG_RESULTS_COUNT = 10
@@ -79,7 +84,8 @@ Personality:
 - Behave like a twitch chatter
 
 Rules:
-- Keep responses on the short side most of the time
+- Keep responses on the short side most of the time, just like most Twitch chatters do, sometimes even just a single emote
+- Really prefer short answers unless the question demands more detail
 - Just go straight to the point, do not start explaining things
 - If the user's question is too open ended, ask to be more specific and exact
 - Address users by name when natural
@@ -103,6 +109,7 @@ Your job is to determine which tools (if any) should be used to help answer the 
 
 Available tools:
 1. capture_stream_screenshot - Use when user asks what's happening on stream, what's on screen, or wants current stream content.
+   - IMPORTANT: This tool automatically checks if the stream is live first. If offline, it returns an error - you should inform the user the stream is offline.
    - Has optional 'channel' parameter to specify which Twitch channel to capture
    - Default channel is '{TWITCH_CHANNEL}' (use this most of the time unless user asks about a different channel)
 2. web_search - Use when user asks about current events, recent information, specific facts, news, or anything requiring up-to-date knowledge
@@ -112,7 +119,8 @@ Guidelines:
 - Don't call tools for casual conversation, greetings, or questions you can answer directly
 - For web searches, be specific with search queries
 - You can call multiple tools if needed
-- If no tools are needed, don't call any"""
+- If no tools are needed, don't call any
+- When screenshot tool returns offline status, inform the user naturally"""
 
 # System Prompt for Website Selection (Smaller model)
 WEBSITE_SELECTION_PROMPT = """You are a website selection assistant. Given a list of search results, select the most relevant website to scrape for detailed information.
@@ -123,3 +131,13 @@ Your task:
 3. Respond ONLY with the number of your choice (1, 2, 3, 4, or 5)
 
 Do not provide explanations, just the number."""
+
+# System Prompt for Ad Wait Message Generation (Smaller model)
+AD_WAIT_PROMPT = """Generate a super short Twitch chat message (max 30 characters) telling the user you're waiting for ads to finish.
+
+Rules:
+- Match the language of the user's message
+- Use casual Twitch chatter style
+- Be brief and friendly
+- Can use common Twitch emotes if appropriate
+- Just say you're waiting for ads, nothing else"""

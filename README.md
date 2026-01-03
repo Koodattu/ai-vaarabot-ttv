@@ -11,6 +11,10 @@ A witty Twitch chat bot powered by Google Gemini AI. Responds when mentioned wit
 - **📺 Multi-channel** - Can join one or more Twitch channels
 - **⏱️ Rate limiting** - Per-user cooldown and hourly message limits
 - **🔐 OAuth flow** - Automatic token management with refresh support
+- **📸 Screenshot capture** - Can capture Twitch stream screenshots with ffmpeg/streamlink
+- **🎬 Ad detection** - Automatically detects and waits for pre-roll ads to complete
+- **🔍 Web search** - Can search the web for current information
+- **🌐 Website scraping** - Can scrape and read website content
 
 ## 🚀 Setup
 
@@ -69,14 +73,20 @@ Mention the bot in Twitch chat:
 
 ## ⚙️ Configuration
 
-| Variable                | Description                                     | Default           |
-| ----------------------- | ----------------------------------------------- | ----------------- |
-| `TWITCH_APP_ID`         | Twitch application Client ID                    | _Required_        |
-| `TWITCH_APP_SECRET`     | Twitch application Client Secret                | _Required_        |
-| `GEMINI_API_KEY`        | Google Gemini API key                           | _Required_        |
-| `TARGET_CHANNELS`       | Channels to join (comma-separated)              | Bot's own channel |
-| `USER_TIMEOUT_SECONDS`  | Cooldown between responses per user             | `5`               |
-| `MAX_MESSAGES_PER_HOUR` | Max responses per user per hour (0 = unlimited) | `10`              |
+| Variable                      | Description                                     | Default           |
+| ----------------------------- | ----------------------------------------------- | ----------------- |
+| `TWITCH_APP_ID`               | Twitch application Client ID                    | _Required_        |
+| `TWITCH_APP_SECRET`           | Twitch application Client Secret                | _Required_        |
+| `GEMINI_API_KEY`              | Google Gemini API key                           | _Required_        |
+| `TARGET_CHANNELS`             | Channels to join (comma-separated)              | Bot's own channel |
+| `USER_TIMEOUT_SECONDS`        | Cooldown between responses per user             | `5`               |
+| `MAX_MESSAGES_PER_HOUR`       | Max responses per user per hour (0 = unlimited) | `10`              |
+| `AD_DETECTION_ENABLED`        | Enable automatic pre-roll ad detection          | `true`            |
+| `AD_DETECTION_CHECK_INTERVAL` | How often to check for ads (seconds)            | `5.0`             |
+| `AD_DETECTION_MAX_WAIT`       | Maximum time to wait for ads (seconds)          | `30.0`            |
+| `STREAMLINK_OAUTH_TOKEN`      | Streamlink OAuth token for ad-free streams      | _Optional_        |
+| `GOOGLE_SEARCH_API_KEY`       | Google Custom Search API key                    | _Optional_        |
+| `GOOGLE_SEARCH_ENGINE_ID`     | Google Custom Search Engine ID                  | _Optional_        |
 
 ### Example `.env`
 
@@ -108,6 +118,34 @@ MAX_MESSAGES_PER_HOUR=10
    - User's name for personalized responses
 
 5. **Language Detection** - Automatically detects and responds in the user's language.
+
+6. **Ad Detection** - When capturing screenshots:
+   - Uses OCR (Tesseract) to detect "Preparing your stream" text
+   - Automatically waits up to 30 seconds for pre-roll ads to finish
+   - Polls every 5 seconds to check if ads have cleared
+   - Falls back gracefully if timeout is reached
+   - Can be disabled via `AD_DETECTION_ENABLED=false`
+
+## 📦 System Requirements
+
+### Required Tools
+
+- **Python 3.8+** - Python runtime
+- **FFmpeg** - For screenshot capture ([download](https://ffmpeg.org/download.html))
+- **Tesseract OCR** - For ad text detection ([download](https://github.com/tesseract-ocr/tesseract))
+  - Windows: Download installer from [UB Mannheim](https://github.com/UB-Mannheim/tesseract/wiki)
+  - macOS: `brew install tesseract`
+  - Linux: `sudo apt-get install tesseract-ocr`
+
+### Python Dependencies
+
+All Python packages are listed in `requirements.txt`. Key dependencies:
+
+- `twitchAPI` - Twitch chat connection
+- `google-genai` - Gemini AI integration
+- `streamlink` - Stream URL extraction
+- `pytesseract` - OCR for ad detection
+- `Pillow` - Image processing
 
 ## 📁 Files
 
