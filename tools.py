@@ -8,10 +8,11 @@ import subprocess
 import requests
 from pathlib import Path
 from streamlink.session import Streamlink
+from streamlink.options import Options
 from bs4 import BeautifulSoup
 import cloudscraper
 
-from config import SCREENSHOT_PATH, TWITCH_CHANNEL, GOOGLE_SEARCH_API_KEY, GOOGLE_SEARCH_ENGINE_ID
+from config import SCREENSHOT_PATH, TWITCH_CHANNEL, GOOGLE_SEARCH_API_KEY, GOOGLE_SEARCH_ENGINE_ID, STREAMLINK_OAUTH_TOKEN
 
 
 def init_screenshots_dir() -> None:
@@ -33,7 +34,15 @@ def capture_stream_screenshot() -> dict:
         # Get stream URL via streamlink with ad filtering
         session = Streamlink()
         plugin_name, plugin_class, resolved_url = session.resolve_url(channel_url)
-        plugin = plugin_class(session, resolved_url, options={"disable-ads": True, "low-latency": True})
+
+        # Create options with OAuth token if available
+        options = Options()
+        options.set("disable-ads", True)
+        options.set("low-latency", True)
+        if STREAMLINK_OAUTH_TOKEN:
+            options.set("api-header", [("Authorization", f"OAuth {STREAMLINK_OAUTH_TOKEN}")])
+
+        plugin = plugin_class(session, resolved_url, options)
         streams = plugin.streams()
 
         if not streams:

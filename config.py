@@ -32,6 +32,9 @@ OLLAMA_HOST = 'http://127.0.0.1:11434'
 GOOGLE_SEARCH_API_KEY = os.getenv("GOOGLE_SEARCH_API_KEY")
 GOOGLE_SEARCH_ENGINE_ID = os.getenv("GOOGLE_SEARCH_ENGINE_ID")
 
+# Streamlink Configuration
+STREAMLINK_OAUTH_TOKEN = os.getenv("STREAMLINK_OAUTH_TOKEN")
+
 # Channel Configuration
 _raw_channels = os.getenv("TARGET_CHANNELS", "").strip()
 TARGET_CHANNELS = [ch.strip().lower() for ch in _raw_channels.split(",") if ch.strip()] if _raw_channels else []
