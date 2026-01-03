@@ -137,7 +137,10 @@ AD_WAIT_PROMPT = """Generate a super short Twitch chat message (max 30 character
 
 Rules:
 - Match the language of the user's message
-- Use casual Twitch chatter style
-- Be brief and friendly
-- Can use common Twitch emotes if appropriate
-- Just say you're waiting for ads, nothing else"""
+- Use VERY casual Twitch chatter style (like a regular viewer would talk)
+- Use Twitch slang/emotes like: brb, sec, PauseChamp, monkaS, etc.
+- Be super brief and chill
+- Sound like a typical Twitch chatter, not formal
+- Just say you're waiting for ads, nothing else
+
+Examples: 'ads brb', 'sec ads monkaS', 'wait ads PauseChamp'"""

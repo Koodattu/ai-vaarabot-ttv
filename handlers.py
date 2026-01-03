@@ -93,11 +93,16 @@ class ChatHandlers:
 
         # Create callback for sending intermediate messages (e.g., ad notifications)
         async def send_chat_message(text: str):
-            """Send a message to the chat."""
+            """Send a reply message to the chat."""
             try:
-                await msg.chat.send_message(msg.room.name, text)
+                await msg.reply(text)
             except Exception as e:
-                print(f"[Callback] Error sending message: {e}")
+                print(f"[Callback] Error sending reply: {e}")
+                # Fallback to regular message
+                try:
+                    await msg.chat.send_message(msg.room.name, f"@{user_name} {text}")
+                except Exception as e2:
+                    print(f"[Callback] Error sending message: {e2}")
 
         # Get response from LLM (channel-scoped context) - BEFORE storing current message
         response = await self.llm_provider.get_response(channel, user_id, user_name, clean_message, self.database, msg_callback=send_chat_message)

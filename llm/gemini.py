@@ -113,117 +113,270 @@ class GeminiLLM(BaseLLM):
             )
         )
 
-        # Check if there are function calls in the response
+        # First pass: collect all tool calls to check if both screenshot and web_search are requested
+        tool_calls = []
         if (response.candidates and
             response.candidates[0].content and
             response.candidates[0].content.parts):
 
             for part in response.candidates[0].content.parts:
                 if hasattr(part, 'function_call') and part.function_call:
-                    function_call = part.function_call
-                    print(f"[Gemini Tool Call] {function_call.name}")
+                    tool_calls.append(part.function_call)
 
-                    # Execute the function based on name
-                    if function_call.name == "capture_stream_screenshot":
-                        # Extract channel parameter if provided
-                        target_channel = function_call.args.get("channel") if function_call.args else channel
+        # Check if BOTH screenshot and web_search are requested
+        has_screenshot = any(tc.name == "capture_stream_screenshot" for tc in tool_calls)
+        has_web_search = any(tc.name == "web_search" for tc in tool_calls)
+        both_tools_requested = has_screenshot and has_web_search
 
-                        print(f"[Gemini] Capturing screenshot from channel: {target_channel}")
+        if both_tools_requested:
+            print("[Gemini] Both screenshot and web_search requested - using enriched query flow")
 
-                        # Import ad detection wrapper
-                        from tools import capture_screenshot_with_ad_detection
-                        from config import AD_DETECTION_ENABLED
+            # Step 1: Capture screenshot first
+            screenshot_call = next(tc for tc in tool_calls if tc.name == "capture_stream_screenshot")
+            target_channel = screenshot_call.args.get("channel") if screenshot_call.args else channel
 
-                        # Use ad detection if enabled
-                        if AD_DETECTION_ENABLED:
-                            from config import AD_WAIT_PROMPT
-                            screenshot_result = await capture_screenshot_with_ad_detection(
-                                channel=target_channel,
-                                llm_provider=self,
-                                simple_prompt=AD_WAIT_PROMPT,
-                                user_message=user_message,
-                                msg_callback=msg_callback
-                            )
-                        else:
-                            screenshot_result = await capture_stream_screenshot(channel=target_channel)
+            print(f"[Gemini] Capturing screenshot from channel: {target_channel}")
+            from tools import capture_screenshot_with_ad_detection
+            from config import AD_DETECTION_ENABLED, AD_WAIT_PROMPT
 
-                        if screenshot_result["success"]:
-                            print(f"[Tool Result] Screenshot captured: {screenshot_result['file_path']}")
-                            if screenshot_result.get("ad_wait_info"):
-                                ad_info = screenshot_result["ad_wait_info"]
-                                if ad_info["had_ads"]:
-                                    print(f"[Tool Result] Ad detection: waited {ad_info['wait_time']:.1f}s, timed_out={ad_info['timed_out']}")
-                            # Read the image
-                            with open(screenshot_result["file_path"], 'rb') as f:
-                                result["screenshot_data"] = f.read()
-                        else:
-                            print(f"[Tool Result] Screenshot failed: {screenshot_result['error']}")
-                            # Store error info to pass to LLM
-                            result["screenshot_error"] = screenshot_result["error"]
-                            # Also check if stream is offline
-                            if screenshot_result.get("is_live") is False:
-                                result["screenshot_error"] = f"The stream is currently offline. {screenshot_result['error']}"
+            if AD_DETECTION_ENABLED:
+                screenshot_result = await capture_screenshot_with_ad_detection(
+                    channel=target_channel,
+                    llm_provider=self,
+                    simple_prompt=AD_WAIT_PROMPT,
+                    user_message=user_message,
+                    msg_callback=msg_callback
+                )
+            else:
+                screenshot_result = await capture_stream_screenshot(channel=target_channel)
 
-                    elif function_call.name == "web_search":
-                        # Extract parameters
-                        query = function_call.args.get("query", "")
+            if screenshot_result["success"]:
+                print(f"[Tool Result] Screenshot captured: {screenshot_result['file_path']}")
+                # Read the screenshot
+                with open(screenshot_result["file_path"], 'rb') as f:
+                    screenshot_data = f.read()
+                result["screenshot_data"] = screenshot_data
 
-                        print(f"[Gemini] Searching web for: {query}")
-                        search_result = perform_web_search(query)
+                # Step 2: Generate enriched query using screenshot
+                enriched_query = self._generate_enriched_query(user_message, screenshot_data)
 
-                        if search_result["success"] and search_result["results"]:
-                            # STEP 1: Format search results for website selection
-                            results_list = []
-                            for i, item in enumerate(search_result["results"], 1):
-                                results_list.append({
-                                    "number": i,
-                                    "title": item["title"],
-                                    "snippet": item["snippet"],
-                                    "link": item["link"]
-                                })
+                if enriched_query:
+                    # Step 3: Perform web search with enriched query (discard original query)
+                    print(f"[Gemini] Searching web with enriched query: {enriched_query}")
+                    search_result = perform_web_search(enriched_query)
 
-                            results_text = f"Web search results for '{query}':\n\n"
-                            for item in results_list:
-                                results_text += f"{item['number']}. {item['title']}\n"
-                                results_text += f"   {item['snippet']}\n\n"
+                    if search_result["success"] and search_result["results"]:
+                        results_list = []
+                        for i, item in enumerate(search_result["results"], 1):
+                            results_list.append({
+                                "number": i,
+                                "title": item["title"],
+                                "snippet": item["snippet"],
+                                "link": item["link"]
+                            })
 
-                            print(f"[Tool Result] Found {len(results_list)} results")
+                        results_text = f"Web search results for '{enriched_query}':\n\n"
+                        for item in results_list:
+                            results_text += f"{item['number']}. {item['title']}\n"
+                            results_text += f"   {item['snippet']}\n\n"
 
-                            # STEP 2: Ask smaller model to select which website to scrape
-                            selected_index = self._select_website(user_prompt, results_text, results_list)
+                        print(f"[Tool Result] Found {len(results_list)} results")
 
-                            if selected_index is not None:
-                                selected_url = results_list[selected_index]["link"]
-                                print(f"[Gemini] Selected result #{selected_index + 1}: {selected_url}")
+                        # Select and scrape website
+                        selected_index = self._select_website(user_prompt, results_text, results_list)
 
-                                # STEP 3: Scrape the selected website
-                                scrape_result = scrape_website(selected_url)
+                        if selected_index is not None:
+                            selected_url = results_list[selected_index]["link"]
+                            print(f"[Gemini] Selected result #{selected_index + 1}: {selected_url}")
 
-                                if scrape_result["success"]:
-                                    # Format final result with scraped content
-                                    result["search_results"] = f"""Web search for '{query}':
+                            scrape_result = scrape_website(selected_url)
+
+                            if scrape_result["success"]:
+                                result["search_results"] = f"""Web search for '{enriched_query}':
 
 Selected source: {scrape_result['url']}
 Title: {results_list[selected_index]['title']}
 
 Content:
 {scrape_result['text']}"""
-                                    print(f"[Tool Result] Successfully scraped {len(scrape_result['text'])} characters")
-                                else:
-                                    print(f"[Tool Result] Scraping failed: {scrape_result['error']}")
-                                    # Fallback to search snippets
-                                    result["search_results"] = results_text
+                                print(f"[Tool Result] Successfully scraped {len(scrape_result['text'])} characters")
                             else:
-                                print(f"[Tool Result] Website selection failed, using search snippets")
+                                print(f"[Tool Result] Scraping failed: {scrape_result['error']}")
                                 result["search_results"] = results_text
                         else:
-                            if search_result["success"]:
-                                result["search_results"] = f"No search results found for '{query}'."
-                                print(f"[Tool Result] No results found")
-                            else:
-                                print(f"[Tool Result] Search failed: {search_result['error']}")
+                            print(f"[Tool Result] Website selection failed, using search snippets")
+                            result["search_results"] = results_text
+                    else:
+                        if search_result["success"]:
+                            result["search_results"] = f"No search results found for '{enriched_query}'."
+                            print(f"[Tool Result] No results found")
+                        else:
+                            print(f"[Tool Result] Search failed: {search_result['error']}")
+                else:
+                    print("[Gemini] Failed to generate enriched query, skipping web search")
+            else:
+                print(f"[Tool Result] Screenshot failed: {screenshot_result['error']}")
+                result["screenshot_error"] = screenshot_result["error"]
+                if screenshot_result.get("is_live") is False:
+                    result["screenshot_error"] = f"The stream is currently offline. {screenshot_result['error']}"
+
+            # Return early - we've handled both tools
+            return result
+
+        # Normal flow: execute tools independently
+        for part in response.candidates[0].content.parts:
+            if not hasattr(part, 'function_call') or not part.function_call:
+                continue
+
+            function_call = part.function_call
+            print(f"[Gemini Tool Call] {function_call.name}")
+
+            # Execute the function based on name
+            if function_call.name == "capture_stream_screenshot":
+                # Extract channel parameter if provided
+                target_channel = function_call.args.get("channel") if function_call.args else channel
+
+                print(f"[Gemini] Capturing screenshot from channel: {target_channel}")
+
+                # Import ad detection wrapper
+                from tools import capture_screenshot_with_ad_detection
+                from config import AD_DETECTION_ENABLED
+
+                # Use ad detection if enabled
+                if AD_DETECTION_ENABLED:
+                    from config import AD_WAIT_PROMPT
+                    screenshot_result = await capture_screenshot_with_ad_detection(
+                        channel=target_channel,
+                        llm_provider=self,
+                        simple_prompt=AD_WAIT_PROMPT,
+                        user_message=user_message,
+                        msg_callback=msg_callback
+                    )
+                else:
+                    screenshot_result = await capture_stream_screenshot(channel=target_channel)
+
+                if screenshot_result["success"]:
+                    print(f"[Tool Result] Screenshot captured: {screenshot_result['file_path']}")
+                    if screenshot_result.get("ad_wait_info"):
+                        ad_info = screenshot_result["ad_wait_info"]
+                        if ad_info["had_ads"]:
+                            print(f"[Tool Result] Ad detection: waited {ad_info['wait_time']:.1f}s, timed_out={ad_info['timed_out']}")
+                    # Read the image
+                    with open(screenshot_result["file_path"], 'rb') as f:
+                        result["screenshot_data"] = f.read()
+                else:
+                    print(f"[Tool Result] Screenshot failed: {screenshot_result['error']}")
+                    # Store error info to pass to LLM
+                    result["screenshot_error"] = screenshot_result["error"]
+                    # Also check if stream is offline
+                    if screenshot_result.get("is_live") is False:
+                        result["screenshot_error"] = f"The stream is currently offline. {screenshot_result['error']}"
+
+            elif function_call.name == "web_search":
+                # Extract parameters
+                query = function_call.args.get("query", "")
+
+                print(f"[Gemini] Searching web for: {query}")
+                search_result = perform_web_search(query)
+
+                if search_result["success"] and search_result["results"]:
+                    # STEP 1: Format search results for website selection
+                    results_list = []
+                    for i, item in enumerate(search_result["results"], 1):
+                        results_list.append({
+                            "number": i,
+                            "title": item["title"],
+                            "snippet": item["snippet"],
+                            "link": item["link"]
+                        })
+
+                    results_text = f"Web search results for '{query}':\n\n"
+                    for item in results_list:
+                        results_text += f"{item['number']}. {item['title']}\n"
+                        results_text += f"   {item['snippet']}\n\n"
+
+                    print(f"[Tool Result] Found {len(results_list)} results")
+
+                    # STEP 2: Ask smaller model to select which website to scrape
+                    selected_index = self._select_website(user_prompt, results_text, results_list)
+
+                    if selected_index is not None:
+                        selected_url = results_list[selected_index]["link"]
+                        print(f"[Gemini] Selected result #{selected_index + 1}: {selected_url}")
+
+                        # STEP 3: Scrape the selected website
+                        scrape_result = scrape_website(selected_url)
+
+                        if scrape_result["success"]:
+                            # Format final result with scraped content
+                            result["search_results"] = f"""Web search for '{query}':
+
+Selected source: {scrape_result['url']}
+Title: {results_list[selected_index]['title']}
+
+Content:
+{scrape_result['text']}"""
+                            print(f"[Tool Result] Successfully scraped {len(scrape_result['text'])} characters")
+                        else:
+                            print(f"[Tool Result] Scraping failed: {scrape_result['error']}")
+                            # Fallback to search snippets
+                            result["search_results"] = results_text
+                    else:
+                        print(f"[Tool Result] Website selection failed, using search snippets")
+                        result["search_results"] = results_text
+                else:
+                    if search_result["success"]:
+                        result["search_results"] = f"No search results found for '{query}'."
+                        print(f"[Tool Result] No results found")
+                    else:
+                        print(f"[Tool Result] Search failed: {search_result['error']}")
 
         return result
+
+    def _generate_enriched_query(self, user_message: str, screenshot_data: bytes) -> str | None:
+        """Use smaller model with screenshot to generate an enriched search query.
+
+        Args:
+            user_message: The user's original question
+            screenshot_data: The screenshot image data
+
+        Returns:
+            Enriched search query string, or None if generation failed
+        """
+        print(f"[Gemini] Using {GEMINI_SMALLER_MODEL} to generate enriched query with screenshot...")
+
+        # Create prompt for query enrichment
+        enrichment_prompt = f"""Based on the user's question and the screenshot of the Twitch stream, generate a single, specific search keyword or short phrase that would find the most relevant information to answer their question.
+
+User question: {user_message}
+
+Provide ONLY the search query, nothing else. Be specific and concise (1-3 words maximum)."""
+
+        try:
+            # Build message with screenshot
+            parts = [
+                types.Part(text=enrichment_prompt),
+                types.Part.from_bytes(data=screenshot_data, mime_type='image/jpeg')
+            ]
+            messages = [types.Content(role="user", parts=parts)]
+
+            # Request enriched query
+            response = self.client.models.generate_content(
+                model=GEMINI_SMALLER_MODEL,
+                contents=messages,
+                config=types.GenerateContentConfig(
+                    max_output_tokens=50,
+                    temperature=0.3,  # Low temperature for focused query
+                )
+            )
+
+            enriched_query = response.text.strip()
+            print(f"[Gemini] Enriched query: '{enriched_query}'")
+            return enriched_query
+
+        except Exception as e:
+            print(f"[Gemini] Error generating enriched query: {e}")
+            return None
 
     def _select_website(self, user_message: str, results_text: str, results_list: list) -> int | None:
         """Use smaller model to select which website to scrape.
