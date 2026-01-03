@@ -5,7 +5,7 @@ Gemini LLM implementation with tool support.
 from google import genai
 from google.genai import types
 
-from config import GEMINI_API_KEY, GEMINI_MODEL, SYSTEM_PROMPT
+from config import GEMINI_API_KEY, GEMINI_MODEL, GEMINI_SMALLER_MODEL, SYSTEM_PROMPT, TOOL_DETECTION_PROMPT
 from tools import capture_stream_screenshot, perform_web_search, GEMINI_SCREENSHOT_TOOL, GEMINI_WEB_SEARCH_TOOL
 from .base import BaseLLM
 
@@ -35,7 +35,7 @@ class GeminiLLM(BaseLLM):
             return False
 
     def get_response(self, channel: str, user_id: str, user_name: str, message: str, database) -> str:
-        """Get response from Gemini with RAG context and tool support."""
+        """Get response from Gemini with RAG context and two-model tool detection flow."""
         try:
             # Build context from database (channel-scoped)
             context = database.build_context(channel, user_id, user_name, message)
@@ -53,42 +53,58 @@ class GeminiLLM(BaseLLM):
             else:
                 full_prompt = user_prompt
 
-            # Define custom tools
-            custom_tools = types.Tool(function_declarations=[
-                GEMINI_SCREENSHOT_TOOL,
-                GEMINI_WEB_SEARCH_TOOL
-            ])
-
             print(f"[Gemini Prompt]\n{full_prompt}\n")
 
-            # Build conversation messages
-            messages = [types.Content(role="user", parts=[types.Part(text=full_prompt)])]
+            # STEP 1: Use smaller model to detect which tools to use
+            tool_results = self._detect_and_execute_tools(full_prompt)
 
-            # Initial request with all tools
-            response = self.client.models.generate_content(
-                model=GEMINI_MODEL,
-                contents=messages,
-                config=types.GenerateContentConfig(
-                    system_instruction=SYSTEM_PROMPT,
-                    max_output_tokens=400,
-                    temperature=0.7,
-                    tools=[custom_tools],
-                    automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
-                    thinking_config=types.ThinkingConfig(thinking_level="low")
-                )
-            )
+            # STEP 2: Use larger model to generate final response
+            final_response = self._generate_final_response(full_prompt, tool_results)
 
-            # Handle response including function calls
-            response_text = self._handle_response(messages, response)
-            return response_text
+            return final_response
 
         except Exception as e:
             print(f"Gemini error: {e}")
             return "Sorry, I couldn't process that right now."
 
-    def _handle_response(self, messages: list, response) -> str:
-        """Handle Gemini response, including function calls."""
-        # Check if there's a function call in the response
+    def _detect_and_execute_tools(self, user_prompt: str) -> dict:
+        """Use smaller model to detect tools and execute them.
+
+        Returns dict with:
+        - screenshot_data: bytes or None
+        - search_results: str or None
+        """
+        result = {
+            "screenshot_data": None,
+            "search_results": None
+        }
+
+        # Define custom tools
+        custom_tools = types.Tool(function_declarations=[
+            GEMINI_SCREENSHOT_TOOL,
+            GEMINI_WEB_SEARCH_TOOL
+        ])
+
+        # Build messages for tool detection
+        messages = [types.Content(role="user", parts=[types.Part(text=user_prompt)])]
+
+        print(f"[Gemini] Using {GEMINI_SMALLER_MODEL} for tool detection...")
+
+        # Request with smaller model for tool detection
+        response = self.client.models.generate_content(
+            model=GEMINI_SMALLER_MODEL,
+            contents=messages,
+            config=types.GenerateContentConfig(
+                system_instruction=TOOL_DETECTION_PROMPT,
+                max_output_tokens=200,
+                temperature=0.3,  # Lower temperature for more deterministic tool selection
+                tools=[custom_tools],
+                automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+                thinking_config=types.ThinkingConfig(thinking_level="low")
+            )
+        )
+
+        # Check if there are function calls in the response
         if (response.candidates and
             response.candidates[0].content and
             response.candidates[0].content.parts):
@@ -98,73 +114,80 @@ class GeminiLLM(BaseLLM):
                     function_call = part.function_call
                     print(f"[Gemini Tool Call] {function_call.name}")
 
-                    # Add assistant's function call to messages
-                    messages.append(response.candidates[0].content)
-
                     # Execute the function based on name
                     if function_call.name == "capture_stream_screenshot":
-                        result = capture_stream_screenshot()
+                        screenshot_result = capture_stream_screenshot()
 
-                        if result["success"]:
-                            print(f"[Tool Result] Screenshot captured: {result['file_path']}")
-
-                            # Read and add the image to messages
-                            with open(result["file_path"], 'rb') as f:
-                                image_bytes = f.read()
-
-                            image_part = types.Part.from_bytes(data=image_bytes, mime_type='image/jpeg')
-                            messages.append(types.Content(role="user", parts=[image_part]))
+                        if screenshot_result["success"]:
+                            print(f"[Tool Result] Screenshot captured: {screenshot_result['file_path']}")
+                            # Read the image
+                            with open(screenshot_result["file_path"], 'rb') as f:
+                                result["screenshot_data"] = f.read()
                         else:
-                            print(f"[Tool Result] Screenshot failed: {result['error']}")
-                            messages.append(types.Content(
-                                role="user",
-                                parts=[types.Part(text=f"(Screenshot capture failed: {result['error']})")]
-                            ))
+                            print(f"[Tool Result] Screenshot failed: {screenshot_result['error']}")
 
                     elif function_call.name == "web_search":
                         # Extract parameters
                         query = function_call.args.get("query", "")
 
                         print(f"[Gemini] Searching web for: {query}")
-                        result = perform_web_search(query)
+                        search_result = perform_web_search(query)
 
-                        if result["success"]:
+                        if search_result["success"]:
                             # Format search results as text
-                            if result["results"]:
+                            if search_result["results"]:
                                 results_text = f"Search results for '{query}':\n\n"
-                                for i, item in enumerate(result["results"], 1):
+                                for i, item in enumerate(search_result["results"], 1):
                                     results_text += f"{i}. {item['title']}\n"
                                     results_text += f"   {item['snippet']}\n"
-                                print(f"[Tool Result] Found {len(result['results'])} results")
+                                result["search_results"] = results_text
+                                print(f"[Tool Result] Found {len(search_result['results'])} results")
                             else:
-                                results_text = f"No search results found for '{query}'."
+                                result["search_results"] = f"No search results found for '{query}'."
                                 print(f"[Tool Result] No results found")
-
-                            # Add search results to messages
-                            messages.append(types.Content(
-                                role="user",
-                                parts=[types.Part(text=results_text)]
-                            ))
                         else:
-                            print(f"[Tool Result] Search failed: {result['error']}")
-                            messages.append(types.Content(
-                                role="user",
-                                parts=[types.Part(text=f"(Web search failed: {result['error']})")]
-                            ))
+                            print(f"[Tool Result] Search failed: {search_result['error']}")
 
-                    # Get final response after tool execution
-                    final_response = self.client.models.generate_content(
-                        model=GEMINI_MODEL,
-                        contents=messages,
-                        config=types.GenerateContentConfig(
-                            system_instruction=SYSTEM_PROMPT,
-                            max_output_tokens=400,
-                            temperature=0.7,
-                            thinking_config=types.ThinkingConfig(thinking_level="low")
-                        )
-                    )
+        return result
 
-                    return final_response.text.strip() if final_response.text else "Done!"
+    def _generate_final_response(self, user_prompt: str, tool_results: dict) -> str:
+        """Use larger model to generate final response with tool results.
 
-        # No function call, return regular text
+        Args:
+            user_prompt: The original user prompt with context
+            tool_results: Dict containing screenshot_data and search_results
+        """
+        print(f"[Gemini] Using {GEMINI_MODEL} for final response generation...")
+
+        # Build messages for final response
+        parts = [types.Part(text=user_prompt)]
+
+        # Add screenshot if available
+        if tool_results["screenshot_data"]:
+            print("[Gemini] Adding screenshot to final response context")
+            image_part = types.Part.from_bytes(
+                data=tool_results["screenshot_data"],
+                mime_type='image/jpeg'
+            )
+            parts.append(image_part)
+
+        # Add search results if available
+        if tool_results["search_results"]:
+            print("[Gemini] Adding search results to final response context")
+            parts.append(types.Part(text=f"\n\n{tool_results['search_results']}"))
+
+        messages = [types.Content(role="user", parts=parts)]
+
+        # Generate final response with larger model
+        response = self.client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=messages,
+            config=types.GenerateContentConfig(
+                system_instruction=SYSTEM_PROMPT,
+                max_output_tokens=400,
+                temperature=0.7,
+                thinking_config=types.ThinkingConfig(thinking_level="low")
+            )
+        )
+
         return response.text.strip() if response.text else "I couldn't generate a response."
