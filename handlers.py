@@ -86,8 +86,15 @@ class ChatHandlers:
 
         # Check hourly rate limit
         if MAX_MESSAGES_PER_HOUR > 0 and self.rate_limiter.is_user_rate_limited(user_id):
+            minutes_left = self.rate_limiter.get_time_until_rate_limit_reset(user_id)
             print(f"[Rate Limited] {user_name} has exceeded {MAX_MESSAGES_PER_HOUR} messages/hour")
             self.database.store_message(channel, user_id, formatted_user_name, message_text, is_bot=False)
+            # Send rate limit notification
+            try:
+                rate_limit_msg = f"You've reached the message limit ({MAX_MESSAGES_PER_HOUR}/hour). Please wait {minutes_left} minute{'s' if minutes_left != 1 else ''} before messaging again."
+                await msg.reply(rate_limit_msg)
+            except Exception as e:
+                print(f"Error sending rate limit message: {e}")
             return
 
         # Remove the mention from the message
@@ -113,8 +120,20 @@ class ChatHandlers:
                 except Exception as e2:
                     print(f"[Callback] Error sending message: {e2}")
 
+        # Get current game name from Twitch API
+        game_name = None
+        try:
+            from twitch_api import check_stream_status
+            stream_status = await check_stream_status(channel)
+            if stream_status["is_live"] and stream_status.get("stream_info"):
+                game_name = stream_status["stream_info"].get("game_name")
+                if game_name:
+                    print(f"[Game] Current game: {game_name}")
+        except Exception as e:
+            print(f"[Game] Failed to get game name: {e}")
+
         # Get response from LLM (channel-scoped context) - BEFORE storing current message
-        response = await self.llm_provider.get_response(channel, user_id, user_name, clean_message, self.database, msg_callback=send_chat_message)
+        response = await self.llm_provider.get_response(channel, user_id, user_name, clean_message, self.database, game_name=game_name, msg_callback=send_chat_message)
 
         # Now store the user's message (after context was built without it)
         self.database.store_message(channel, user_id, formatted_user_name, message_text, is_bot=False)

@@ -55,11 +55,11 @@ class OllamaLLM(BaseLLM):
         )
         return response.message.content.strip()
 
-    async def get_response(self, channel: str, user_id: str, user_name: str, message: str, database, msg_callback=None) -> str:
+    async def get_response(self, channel: str, user_id: str, user_name: str, message: str, database, game_name: str = None, msg_callback=None) -> str:
         """Get response from Ollama with RAG context and tool support."""
         try:
             # Build context from database (channel-scoped)
-            context = database.build_context(channel, user_id, user_name, message)
+            context = database.build_context(channel, user_id, user_name, message, game_name=game_name)
 
             # Create the prompt with context
             user_prompt = f"{user_name}: {message}"
@@ -76,11 +76,15 @@ class OllamaLLM(BaseLLM):
 
             print(f"[Ollama Prompt]\n{full_prompt}\n")
 
-            # First call with tools
+            # First call with tools - format system prompt with current date/time
+            from datetime import datetime
+            current_datetime = datetime.now().strftime("%B %d, %Y at %I:%M %p")
+            system_instruction = SYSTEM_PROMPT.format(current_datetime=current_datetime)
+
             response = self.client.chat(
                 model=OLLAMA_MODEL,
                 messages=[
-                    {'role': 'system', 'content': SYSTEM_PROMPT},
+                    {'role': 'system', 'content': system_instruction},
                     {'role': 'user', 'content': full_prompt}
                 ],
                 tools=[OLLAMA_SCREENSHOT_TOOL],

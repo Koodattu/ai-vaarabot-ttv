@@ -38,6 +38,16 @@ class RateLimiter:
 
         return len(self.user_message_timestamps[user_id]) >= MAX_MESSAGES_PER_HOUR
 
+    def get_time_until_rate_limit_reset(self, user_id: str) -> int:
+        """Get minutes until user can send messages again (when oldest message expires)."""
+        if not self.user_message_timestamps[user_id]:
+            return 0
+
+        now = time.time()
+        oldest_timestamp = self.user_message_timestamps[user_id][0]
+        time_until_reset = (oldest_timestamp + 3600) - now
+        return max(1, int(time_until_reset / 60))  # Return at least 1 minute
+
     def update_user_cooldown(self, user_id: str) -> None:
         """Update user's last message time and add to hourly count."""
         now = time.time()

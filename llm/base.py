@@ -9,7 +9,7 @@ class BaseLLM(ABC):
     """Abstract base class for LLM implementations."""
 
     @abstractmethod
-    async def get_response(self, channel: str, user_id: str, user_name: str, message: str, database, msg_callback=None) -> str:
+    async def get_response(self, channel: str, user_id: str, user_name: str, message: str, database, game_name: str = None, msg_callback=None) -> str:
         """Get response from the LLM with context from database.
 
         Args:
@@ -18,6 +18,7 @@ class BaseLLM(ABC):
             user_name: User's display name
             message: User's message
             database: Database instance for context retrieval
+            game_name: Current game being played on Twitch (if available)
             msg_callback: Optional async callback to send intermediate messages (e.g., for ad notifications)
 
         Returns:

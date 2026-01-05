@@ -137,9 +137,13 @@ class Database:
 
         return messages
 
-    def build_context(self, channel: str, user_id: str, user_name: str, current_message: str) -> str:
+    def build_context(self, channel: str, user_id: str, user_name: str, current_message: str, game_name: str = None) -> str:
         """Build context string from various sources, scoped to a specific channel."""
         context_parts = []
+
+        # Add game name if provided
+        if game_name:
+            context_parts.append(f"=== CURRENT GAME ===\n{game_name}")
 
         # 1. Recent chat messages
         recent_chat = self.get_recent_chat_messages(channel)

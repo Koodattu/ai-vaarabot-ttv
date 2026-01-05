@@ -397,7 +397,8 @@ async def capture_stream_screenshot(channel: str = TWITCH_CHANNEL, skip_live_che
             timeout=30
         )
 
-        if result.returncode == 0 and output_file.exists():
+        # Check if file was actually created (ffmpeg can return non-zero but still succeed)
+        if output_file.exists() and output_file.stat().st_size > 0:
             print(f"✓ Screenshot saved: {output_file}")
             return {
                 "success": True,
@@ -407,9 +408,14 @@ async def capture_stream_screenshot(channel: str = TWITCH_CHANNEL, skip_live_che
                 "error": None
             }
         else:
+            # Print ffmpeg stderr output for debugging
+            stderr_output = result.stderr.decode('utf-8', errors='ignore') if result.stderr else 'No error output'
+            print(f"✗ FFmpeg failed to capture frame (return code: {result.returncode})")
+            print(f"[FFmpeg Error Output]:\n{stderr_output[-1000:]}")  # Last 1000 chars
+
             return {
                 "success": False,
-                "error": "FFmpeg failed to capture frame",
+                "error": f"FFmpeg failed to capture frame (exit code {result.returncode})",
                 "is_live": True,
                 "file_path": None
             }

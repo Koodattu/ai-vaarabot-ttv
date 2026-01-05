@@ -5,7 +5,7 @@ Gemini LLM implementation with tool support.
 from google import genai
 from google.genai import types
 
-from config import GEMINI_API_KEY, GEMINI_MODEL, GEMINI_SMALLER_MODEL, SYSTEM_PROMPT, TOOL_DETECTION_PROMPT, WEBSITE_SELECTION_PROMPT
+from config import GEMINI_API_KEY, GEMINI_MODEL, GEMINI_SMALLER_MODEL, SYSTEM_PROMPT, TOOL_DETECTION_PROMPT, WEBSITE_SELECTION_PROMPT, CONTENT_EXTRACTION_PROMPT
 from tools import capture_stream_screenshot, perform_web_search, scrape_website, GEMINI_SCREENSHOT_TOOL, GEMINI_WEB_SEARCH_TOOL
 from .base import BaseLLM
 
@@ -34,32 +34,31 @@ class GeminiLLM(BaseLLM):
             print(f"✗ Gemini API test failed: {e}")
             return False
 
-    async def get_response(self, channel: str, user_id: str, user_name: str, message: str, database, msg_callback=None) -> str:
+    async def get_response(self, channel: str, user_id: str, user_name: str, message: str, database, game_name: str = None, msg_callback=None) -> str:
         """Get response from Gemini with RAG context and two-model tool detection flow."""
         try:
             # Build context from database (channel-scoped)
-            context = database.build_context(channel, user_id, user_name, message)
+            context = database.build_context(channel, user_id, user_name, message, game_name=game_name)
 
             # Create the prompt with context
             user_prompt = f"{user_name}: {message}"
 
+            # Build context message separately from current message
+            context_message = ""
             if context:
-                full_prompt = f"""Here is context from the chat history:
+                context_message = f"""Here is context from the chat history:
 
-{context}
+{context}"""
 
-=== CURRENT MESSAGE ===
-{user_prompt}"""
-            else:
-                full_prompt = user_prompt
-
-            print(f"[Gemini Prompt]\n{full_prompt}\n")
+            print(f"[Gemini Prompt]\n{context_message}\n\n=== CURRENT MESSAGE ===\n{user_prompt}\n")
 
             # STEP 1: Use smaller model to detect which tools to use
+            # For tool detection, combine context and message
+            full_prompt = f"{context_message}\n\n=== CURRENT MESSAGE ===\n{user_prompt}" if context_message else user_prompt
             tool_results = await self._detect_and_execute_tools(full_prompt, user_prompt, channel, message, msg_callback)
 
-            # STEP 2: Use larger model to generate final response
-            final_response = self._generate_final_response(full_prompt, tool_results)
+            # STEP 2: Use larger model to generate final response with restructured messages
+            final_response = self._generate_final_response(context_message, user_prompt, tool_results)
 
             return final_response
 
@@ -165,7 +164,16 @@ class GeminiLLM(BaseLLM):
                 if enriched_query:
                     # Step 3: Perform web search with enriched query (discard original query)
                     print(f"[Gemini] Searching web with enriched query: {enriched_query}")
-                    search_result = perform_web_search(enriched_query)
+
+                    # Send notification to chat if enabled
+                    from config import WEB_SEARCH_NOTIFICATION
+                    if WEB_SEARCH_NOTIFICATION and msg_callback:
+                        try:
+                            await msg_callback(f"searching web for: {enriched_query}")
+                        except Exception as e:
+                            print(f"[Web Search] Failed to send notification: {e}")
+
+                    search_result = perform_web_search(enriched_query, num_results=10)
 
                     if search_result["success"] and search_result["results"]:
                         results_list = []
@@ -177,37 +185,22 @@ class GeminiLLM(BaseLLM):
                                 "link": item["link"]
                             })
 
-                        results_text = f"Web search results for '{enriched_query}':\n\n"
-                        for item in results_list:
-                            results_text += f"{item['number']}. {item['title']}\n"
-                            results_text += f"   {item['snippet']}\n\n"
-
                         print(f"[Tool Result] Found {len(results_list)} results")
 
-                        # Select and scrape website
-                        selected_index = self._select_website(user_prompt, results_text, results_list)
+                        # Select, scrape, and extract from multiple websites
+                        extracted_content = self._select_scrape_and_extract(user_message, results_list)
 
-                        if selected_index is not None:
-                            selected_url = results_list[selected_index]["link"]
-                            print(f"[Gemini] Selected result #{selected_index + 1}: {selected_url}")
-
-                            scrape_result = scrape_website(selected_url)
-
-                            if scrape_result["success"]:
-                                result["search_results"] = f"""Web search for '{enriched_query}':
-
-Selected source: {scrape_result['url']}
-Title: {results_list[selected_index]['title']}
-
-Content:
-{scrape_result['text']}"""
-                                print(f"[Tool Result] Successfully scraped {len(scrape_result['text'])} characters")
-                            else:
-                                print(f"[Tool Result] Scraping failed: {scrape_result['error']}")
-                                result["search_results"] = results_text
+                        if extracted_content:
+                            result["search_results"] = f"""Web search for '{enriched_query}':\n\n{extracted_content}"""
+                            print(f"[Tool Result] Successfully extracted and compacted content")
                         else:
-                            print(f"[Tool Result] Website selection failed, using search snippets")
+                            # Fallback to search snippets
+                            results_text = f"Web search results for '{enriched_query}':\n\n"
+                            for item in results_list:
+                                results_text += f"{item['number']}. {item['title']}\n"
+                                results_text += f"   {item['snippet']}\n\n"
                             result["search_results"] = results_text
+                            print(f"[Tool Result] Extraction failed, using search snippets")
                     else:
                         if search_result["success"]:
                             result["search_results"] = f"No search results found for '{enriched_query}'."
@@ -281,10 +274,18 @@ Content:
                 query = function_call.args.get("query", "")
 
                 print(f"[Gemini] Searching web for: {query}")
-                search_result = perform_web_search(query)
+
+                # Send notification to chat if enabled
+                from config import WEB_SEARCH_NOTIFICATION
+                if WEB_SEARCH_NOTIFICATION and msg_callback:
+                    try:
+                        await msg_callback(f"searching web for: {query}")
+                    except Exception as e:
+                        print(f"[Web Search] Failed to send notification: {e}")
+
+                search_result = perform_web_search(query, num_results=10)
 
                 if search_result["success"] and search_result["results"]:
-                    # STEP 1: Format search results for website selection
                     results_list = []
                     for i, item in enumerate(search_result["results"], 1):
                         results_list.append({
@@ -294,40 +295,22 @@ Content:
                             "link": item["link"]
                         })
 
-                    results_text = f"Web search results for '{query}':\n\n"
-                    for item in results_list:
-                        results_text += f"{item['number']}. {item['title']}\n"
-                        results_text += f"   {item['snippet']}\n\n"
-
                     print(f"[Tool Result] Found {len(results_list)} results")
 
-                    # STEP 2: Ask smaller model to select which website to scrape
-                    selected_index = self._select_website(user_prompt, results_text, results_list)
+                    # Select, scrape, and extract from multiple websites
+                    extracted_content = self._select_scrape_and_extract(user_message, results_list)
 
-                    if selected_index is not None:
-                        selected_url = results_list[selected_index]["link"]
-                        print(f"[Gemini] Selected result #{selected_index + 1}: {selected_url}")
-
-                        # STEP 3: Scrape the selected website
-                        scrape_result = scrape_website(selected_url)
-
-                        if scrape_result["success"]:
-                            # Format final result with scraped content
-                            result["search_results"] = f"""Web search for '{query}':
-
-Selected source: {scrape_result['url']}
-Title: {results_list[selected_index]['title']}
-
-Content:
-{scrape_result['text']}"""
-                            print(f"[Tool Result] Successfully scraped {len(scrape_result['text'])} characters")
-                        else:
-                            print(f"[Tool Result] Scraping failed: {scrape_result['error']}")
-                            # Fallback to search snippets
-                            result["search_results"] = results_text
+                    if extracted_content:
+                        result["search_results"] = f"""Web search for '{query}':\n\n{extracted_content}"""
+                        print(f"[Tool Result] Successfully extracted and compacted content")
                     else:
-                        print(f"[Tool Result] Website selection failed, using search snippets")
+                        # Fallback to search snippets
+                        results_text = f"Web search results for '{query}':\n\n"
+                        for item in results_list:
+                            results_text += f"{item['number']}. {item['title']}\n"
+                            results_text += f"   {item['snippet']}\n\n"
                         result["search_results"] = results_text
+                        print(f"[Tool Result] Extraction failed, using search snippets")
                 else:
                     if search_result["success"]:
                         result["search_results"] = f"No search results found for '{query}'."
@@ -382,70 +365,180 @@ Provide ONLY the search query, nothing else. Be specific and concise (1-3 words 
             print(f"[Gemini] Error generating enriched query: {e}")
             return None
 
-    def _select_website(self, user_message: str, results_text: str, results_list: list) -> int | None:
-        """Use smaller model to select which website to scrape.
+    def _select_scrape_and_extract(self, user_message: str, results_list: list) -> str | None:
+        """Use smaller model to select multiple websites, scrape them, and extract relevant content.
 
         Args:
             user_message: The user's original question
-            results_text: Formatted search results
-            results_list: List of result dicts
+            results_list: List of result dicts (with number, title, snippet, link)
 
         Returns:
-            Index (0-based) of selected result, or None if selection failed
+            Compacted extracted content from all selected websites, or None if failed
         """
-        print(f"[Gemini] Using {GEMINI_SMALLER_MODEL} for website selection...")
+        print(f"[Gemini] Using {GEMINI_SMALLER_MODEL} for multi-website selection...")
+
+        # Format results for selection
+        results_text = ""
+        for item in results_list:
+            results_text += f"{item['number']}. {item['title']}\n"
+            results_text += f"   {item['snippet']}\n\n"
 
         # Create selection prompt
         selection_prompt = f"""User question: {user_message}
 
 {results_text}
 
-Which result is most relevant to answer the user's question? Reply with only the number (1-{len(results_list)})."""
+Which results (1-{len(results_list)}) are most relevant to answer the user's question? Select 1-5 most useful ones. Reply with ONLY a JSON array of numbers."""
 
-        # Request website selection
-        response = self.client.models.generate_content(
-            model=GEMINI_SMALLER_MODEL,
-            contents=selection_prompt,
-            config=types.GenerateContentConfig(
-                system_instruction=WEBSITE_SELECTION_PROMPT,
-                max_output_tokens=10,
-                temperature=0.1,  # Very low temperature for deterministic selection
-                #thinking_config=types.ThinkingConfig(thinking_level="low")
-            )
-        )
-
-        # Parse the response to get the number
+        # Request website selection with JSON response
         try:
-            response_text = response.text.strip()
-            # Extract first digit from response
-            import re
-            match = re.search(r'\d+', response_text)
-            if match:
-                selected_num = int(match.group())
-                if 1 <= selected_num <= len(results_list):
-                    print(f"[Gemini] Website selection: #{selected_num}")
-                    return selected_num - 1  # Convert to 0-based index
-                else:
-                    print(f"[Gemini] Invalid selection number: {selected_num}")
-                    return 0  # Default to first result
-            else:
-                print(f"[Gemini] No number found in response: {response_text}")
-                return 0  # Default to first result
-        except Exception as e:
-            print(f"[Gemini] Error parsing website selection: {e}")
-            return 0  # Default to first result
+            response = self.client.models.generate_content(
+                model=GEMINI_SMALLER_MODEL,
+                contents=selection_prompt,
+                config=types.GenerateContentConfig(
+                    system_instruction=WEBSITE_SELECTION_PROMPT,
+                    max_output_tokens=50,
+                    temperature=0.1,
+                    response_mime_type="application/json"
+                )
+            )
 
-    def _generate_final_response(self, user_prompt: str, tool_results: dict) -> str:
+            # Parse JSON response
+            import json
+            response_text = response.text.strip()
+            selected_indices = json.loads(response_text)
+
+            if not isinstance(selected_indices, list):
+                print(f"[Gemini] Response is not a list: {response_text}")
+                selected_indices = [1]  # Default to first result
+
+            # Convert to 0-based and validate
+            valid_indices = []
+            for num in selected_indices:
+                if isinstance(num, int) and 1 <= num <= len(results_list):
+                    valid_indices.append(num - 1)  # Convert to 0-based
+
+            if not valid_indices:
+                print(f"[Gemini] No valid selections, defaulting to first result")
+                valid_indices = [0]
+
+            print(f"[Gemini] Selected {len(valid_indices)} websites: {[i+1 for i in valid_indices]}")
+
+            # Scrape and extract from all selected websites
+            extracted_contents = []
+            for idx in valid_indices:
+                selected_url = results_list[idx]["link"]
+                selected_title = results_list[idx]["title"]
+                print(f"[Gemini] Scraping result #{idx + 1}: {selected_url}")
+
+                scrape_result = scrape_website(selected_url)
+
+                if scrape_result["success"]:
+                    print(f"[Gemini] Scraped {len(scrape_result['text'])} chars, extracting relevant content...")
+
+                    # Extract relevant content using smaller model
+                    extracted = self._extract_relevant_content(user_message, scrape_result['text'], selected_url, selected_title)
+
+                    if extracted and extracted != "No relevant information found.":
+                        extracted_contents.append(extracted)
+                        print(f"[Gemini] Extracted content from {selected_url}")
+                    else:
+                        print(f"[Gemini] No relevant content found in {selected_url}")
+                else:
+                    print(f"[Gemini] Failed to scrape {selected_url}: {scrape_result['error']}")
+
+            if not extracted_contents:
+                print(f"[Gemini] No content extracted from any website")
+                return None
+
+            # Combine all extracted content
+            combined = "\n\n---\n\n".join(extracted_contents)
+            print(f"[Gemini] Combined {len(extracted_contents)} extracts into {len(combined)} characters")
+            return combined
+
+        except json.JSONDecodeError as e:
+            print(f"[Gemini] JSON parse error: {e}, response: {response_text}")
+            return None
+        except Exception as e:
+            print(f"[Gemini] Error in website selection/scraping: {e}")
+            return None
+
+    def _extract_relevant_content(self, user_question: str, scraped_text: str, url: str, title: str) -> str | None:
+        """Use smaller model to extract only relevant information from scraped content.
+
+        Args:
+            user_question: The user's original question
+            scraped_text: The full scraped webpage text
+            url: The URL of the webpage
+            title: The title of the webpage
+
+        Returns:
+            Compacted relevant content (2-4 sentences), or None if extraction failed
+        """
+        print(f"[Gemini] Using {GEMINI_SMALLER_MODEL} for content extraction...")
+
+        # Create extraction prompt
+        extraction_prompt = f"""User question: {user_question}
+
+Webpage: {title}
+URL: {url}
+
+Webpage content:
+{scraped_text}
+
+Extract only the most relevant information that answers the user's question. Be concise (2-4 sentences max)."""
+
+        try:
+            response = self.client.models.generate_content(
+                model=GEMINI_SMALLER_MODEL,
+                contents=extraction_prompt,
+                config=types.GenerateContentConfig(
+                    system_instruction=CONTENT_EXTRACTION_PROMPT,
+                    max_output_tokens=200,
+                    temperature=0.3
+                )
+            )
+
+            extracted = response.text.strip() if response.text else None
+
+            if extracted:
+                # Add source attribution
+                extracted = f"[Source: {title}]\n{extracted}"
+
+            return extracted
+
+        except Exception as e:
+            print(f"[Gemini] Error extracting content: {e}")
+            return None
+
+    def _generate_final_response(self, context_message: str, user_prompt: str, tool_results: dict) -> str:
         """Use larger model to generate final response with tool results.
 
         Args:
-            user_prompt: The original user prompt with context
+            context_message: The context from chat history (empty string if no context)
+            user_prompt: The current user message
             tool_results: Dict containing screenshot_data, search_results, and screenshot_error
         """
         print(f"[Gemini] Using {GEMINI_MODEL} for final response generation...")
 
         # Build messages for final response
-        parts = [types.Part(text=user_prompt)]
+        # Message structure: system prompt, then single user message with context and current message
+
+        # Start with system instruction with current date/time
+        from datetime import datetime
+        current_datetime = datetime.now().strftime("%B %d, %Y at %I:%M %p")
+        system_instruction = SYSTEM_PROMPT.format(current_datetime=current_datetime)
+
+        # Build single user message combining context and current prompt
+        message_parts = []
+
+        # Combine context and current message into one text part
+        if context_message:
+            combined_text = f"{context_message}\n\n=== CURRENT MESSAGE ===\n{user_prompt}"
+        else:
+            combined_text = f"=== CURRENT MESSAGE ===\n{user_prompt}"
+
+        message_parts.append(types.Part(text=combined_text))
 
         # Add screenshot if available
         if tool_results["screenshot_data"]:
@@ -454,32 +547,27 @@ Which result is most relevant to answer the user's question? Reply with only the
                 data=tool_results["screenshot_data"],
                 mime_type='image/jpeg'
             )
-            parts.append(image_part)
-
-            # Add game name if available
-            if tool_results.get("stream_info") and tool_results["stream_info"].get("game_name"):
-                game_name = tool_results["stream_info"]["game_name"]
-                print(f"[Gemini] Game being played: {game_name}")
-                parts.append(types.Part(text=f"\n\nCurrent game being played: {game_name}"))
+            message_parts.append(image_part)
 
         # Add screenshot error if screenshot was attempted but failed
         if tool_results.get("screenshot_error"):
             print(f"[Gemini] Adding screenshot error to context: {tool_results['screenshot_error']}")
-            parts.append(types.Part(text=f"\n\n[SCREENSHOT TOOL ERROR]: {tool_results['screenshot_error']}"))
+            message_parts.append(types.Part(text=f"\n\n[SCREENSHOT TOOL ERROR]: {tool_results['screenshot_error']}"))
 
         # Add search results if available
         if tool_results["search_results"]:
             print("[Gemini] Adding search results to final response context")
-            parts.append(types.Part(text=f"\n\n{tool_results['search_results']}"))
+            message_parts.append(types.Part(text=f"\n\n{tool_results['search_results']}"))
 
-        messages = [types.Content(role="user", parts=parts)]
+        # Create single user message with all parts
+        user_messages = [types.Content(role="user", parts=message_parts)]
 
         # Generate final response with larger model
         response = self.client.models.generate_content(
             model=GEMINI_MODEL,
-            contents=messages,
+            contents=user_messages,
             config=types.GenerateContentConfig(
-                system_instruction=SYSTEM_PROMPT,
+                system_instruction=system_instruction,
                 max_output_tokens=800,
                 temperature=0.7,
                 thinking_config=types.ThinkingConfig(thinking_level="low")
