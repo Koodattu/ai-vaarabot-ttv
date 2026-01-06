@@ -682,13 +682,13 @@ GEMINI_SCREENSHOT_TOOL = {
 
 GEMINI_WEB_SEARCH_TOOL = {
     "name": "web_search",
-    "description": "Search the web for current information, facts, news, or any topic not in your knowledge base. Use this when users ask about recent events, current information, specific facts, or anything you don't know. Provide a single search keyword or term.",
+    "description": "Search the web ONLY when absolutely necessary. Use ONLY if: (1) user explicitly asks to search/google something, (2) question is about breaking news from the last 24-48 hours, (3) user needs a live price/score/value, or (4) you genuinely cannot answer from your training data. DO NOT use for general knowledge, games, movies, tech, history, science, or anything you already know. When in doubt, just answer without searching.",
     "parameters": {
         "type": "object",
         "properties": {
             "query": {
                 "type": "string",
-                "description": "The search query to look up on the web. Be specific and clear. Prefer a single word, keyword or term."
+                "description": "The search query. Only provide this if a search is truly necessary."
             },
         },
         "required": ["query"]
@@ -710,6 +710,24 @@ OLLAMA_SCREENSHOT_TOOL = {
                 }
             },
             "required": []
+        }
+    }
+}
+
+OLLAMA_WEB_SEARCH_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "web_search",
+        "description": "Search the web ONLY when absolutely necessary. Use ONLY if: (1) user explicitly asks to search/google something, (2) question is about breaking news from the last 24-48 hours, (3) user needs a live price/score/value, or (4) you genuinely cannot answer from your training data. DO NOT use for general knowledge, games, movies, tech, history, science, or anything you already know. When in doubt, just answer without searching.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "The search query. Only provide this if a search is truly necessary."
+                }
+            },
+            "required": ["query"]
         }
     }
 }

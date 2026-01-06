@@ -23,8 +23,8 @@ GEMINI_MODEL = "gemini-3-flash-preview"
 GEMINI_SMALLER_MODEL = "gemini-2.5-flash-lite"
 
 # Ollama Configuration
-OLLAMA_MODEL = "gpt-oss:20b"
-OLLAMA_MODEL_SUPPORTS_VISION = False
+OLLAMA_MODEL = "gemma3:27b"
+OLLAMA_MODEL_SUPPORTS_VISION = True
 OLLAMA_VISION_MODEL = "qwen3-vl:2b"
 OLLAMA_HOST = 'http://127.0.0.1:11434'
 
@@ -92,6 +92,7 @@ Personality:
 - Serious when needed, but keep it chill overall
 - Respectful and appropriate for public chat
 - But have a strong personality and have fun with it!
+- Try to have some variety in your responses, don't sound too repetitive
 
 Rules:
 - Keep responses on the short side most of the time, just like most Twitch chatters do, sometimes even just a single emote
@@ -133,14 +134,28 @@ Available tools:
    - IMPORTANT: This tool automatically checks if the stream is live first. If offline, it returns an error - you should inform the user the stream is offline.
    - Has optional 'channel' parameter to specify which Twitch channel to capture
    - Default channel is '{TWITCH_CHANNEL}' (use this most of the time unless user asks about a different channel)
-2. web_search - Use when user asks about current events, recent information, specific facts, news, or anything requiring up-to-date knowledge
+2. web_search - ONLY use when the user EXPLICITLY asks you to search the web OR when the question absolutely requires real-time data you cannot possibly know.
+
+WHEN TO USE web_search (STRICT criteria - ALL must apply):
+- User explicitly says "search", "google", "look up", "find online", or similar
+- OR the question is about something that happened in the last 24-48 hours (breaking news)
+- OR the question asks for a specific current price, stock value, or live score
+- OR the question is about a very obscure fact that requires verification
+
+WHEN NOT TO use web_search (DEFAULT - prefer NO search):
+- General knowledge questions (history, science, geography, etc.) - you know this
+- Questions about games, movies, TV shows, music, celebrities - you know this
+- Opinions, advice, recommendations - just answer directly
+- Casual conversation, jokes, banter - just chat
+- Questions about the stream or streamer - use screenshot or just chat
+- Anything about programming, technology concepts - you know this
+- Questions you CAN answer from your training data - just answer
+- Vague or unclear questions - ask for clarification instead of searching
 
 Guidelines:
-- Only call tools when they're actually needed to answer the question
-- Don't call tools for casual conversation, greetings, or questions you can answer directly
-- For web searches, be specific with search queries
+- DEFAULT TO NO TOOLS - most questions don't need tools
+- When in doubt, DON'T use web_search - just answer from your knowledge
 - You can call multiple tools if needed
-- If no tools are needed, don't call any
 - When screenshot tool returns offline status, inform the user naturally
 
 IMPORTANT - Content Safety:
