@@ -579,6 +579,61 @@ def scrape_website(url: str) -> dict:
         return {"success": False, "text": None, "url": url, "error": f"Unexpected error: {str(e)}"}
 
 
+async def fetch_user_data(user_login: str) -> dict:
+    """Fetch Twitch user information by username.
+
+    Args:
+        user_login: The Twitch username to look up
+
+    Returns:
+        Dict with success status, user_data, and any error message.
+        user_data includes: id, login, display_name, description, profile_image_url,
+                          created_at, broadcaster_type, view_count
+    """
+    from twitch_api import get_twitch_client
+
+    client = get_twitch_client()
+    result = await client.get_user_info(user_login=user_login)
+
+    if result["success"]:
+        print(f"✓ Fetched data for {result['user_data']['display_name']}")
+    else:
+        print(f"✗ Failed to fetch user data for {user_login}: {result['error']}")
+
+    return result
+
+
+async def ban_user_from_chat(user_login: str, broadcaster_id: str, moderator_id: str, duration: int = 1) -> dict:
+    """Ban a user from chat for a specified duration (default 1 second).
+
+    Args:
+        user_login: The Twitch username to ban
+        broadcaster_id: The ID of the broadcaster/channel
+        moderator_id: The ID of the moderator (bot user)
+        duration: Duration in seconds (1-1209600). Defaults to 1 second.
+
+    Returns:
+        Dict with success status, user_name, ends_at, and any error message.
+    """
+    from twitch_api import get_twitch_client
+
+    client = get_twitch_client()
+    result = await client.ban_user(
+        broadcaster_id=broadcaster_id,
+        moderator_id=moderator_id,
+        user_login=user_login,
+        duration=duration,
+        reason="Timeout by AI bot"
+    )
+
+    if result["success"]:
+        print(f"✓ Banned {result['user_name']} for {duration} second(s)")
+    else:
+        print(f"✗ Failed to ban {user_login}: {result['error']}")
+
+    return result
+
+
 async def capture_screenshot_with_ad_detection(channel: str, llm_provider, simple_prompt: str, user_message: str, msg_callback=None) -> dict:
     """Capture screenshot with automatic ad detection and waiting.
 
@@ -695,6 +750,36 @@ GEMINI_WEB_SEARCH_TOOL = {
     }
 }
 
+GEMINI_BAN_TOOL = {
+    "name": "ban_user",
+    "description": "Temporarily ban (timeout) a user from chat for 1 second as a playful joke. Use this ONLY when the user explicitly asks you to ban someone or timeout someone as a joke/meme (e.g., 'ban John', 'timeout that guy'). This is a harmless 1-second timeout used for fun. Do NOT use this for actual moderation.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "user_login": {
+                "type": "string",
+                "description": "The Twitch username (login name) of the user to ban. This should be the exact username without @ symbol."
+            }
+        },
+        "required": ["user_login"]
+    }
+}
+
+GEMINI_USER_INFO_TOOL = {
+    "name": "get_user_info",
+    "description": "Fetch detailed information about a Twitch user by their username. Use this when someone asks about a user's account details, profile, creation date, follower stats, or bio. Returns user ID, display name, bio/description, profile image, account creation date, broadcaster type (partner/affiliate), and view count.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "user_login": {
+                "type": "string",
+                "description": "The Twitch username (login name) to look up. This should be the exact username without @ symbol."
+            }
+        },
+        "required": ["user_login"]
+    }
+}
+
 # Tool declarations for Ollama
 OLLAMA_SCREENSHOT_TOOL = {
     "type": "function",
@@ -728,6 +813,42 @@ OLLAMA_WEB_SEARCH_TOOL = {
                 }
             },
             "required": ["query"]
+        }
+    }
+}
+
+OLLAMA_BAN_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "ban_user",
+        "description": "Temporarily ban (timeout) a user from chat for 1 second as a playful joke. Use this ONLY when the user explicitly asks you to ban someone or timeout someone as a joke/meme (e.g., 'ban John', 'timeout that guy'). This is a harmless 1-second timeout used for fun. Do NOT use this for actual moderation.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "user_login": {
+                    "type": "string",
+                    "description": "The Twitch username (login name) of the user to ban. This should be the exact username without @ symbol."
+                }
+            },
+            "required": ["user_login"]
+        }
+    }
+}
+
+OLLAMA_USER_INFO_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "get_user_info",
+        "description": "Fetch detailed information about a Twitch user by their username. Use this when someone asks about a user's account details, profile, creation date, follower stats, or bio. Returns user ID, display name, bio/description, profile image, account creation date, broadcaster type (partner/affiliate), and view count.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "user_login": {
+                    "type": "string",
+                    "description": "The Twitch username (login name) to look up. This should be the exact username without @ symbol."
+                }
+            },
+            "required": ["user_login"]
         }
     }
 }

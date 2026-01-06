@@ -19,6 +19,16 @@ class TwitchAPIClient:
         """Initialize the Twitch API client."""
         self.twitch: Optional[Twitch] = None
         self._initialized = False
+        self._external_twitch: Optional[Twitch] = None  # For using authenticated instance from main bot
+
+    def set_authenticated_client(self, twitch: Twitch) -> None:
+        """Set an external authenticated Twitch client for user-level operations.
+
+        Args:
+            twitch: Already authenticated Twitch instance from main bot
+        """
+        self._external_twitch = twitch
+        print("✓ TwitchAPIClient now using authenticated Twitch instance for user operations")
 
     async def initialize(self) -> bool:
         """Initialize and authenticate with Twitch API.
@@ -117,6 +127,165 @@ class TwitchAPIClient:
                 "is_live": False,
                 "error": f"API error: {str(e)}",
                 "stream_info": None
+            }
+
+    async def ban_user(self, broadcaster_id: str, moderator_id: str, user_login: str, duration: int = 1, reason: str = "Timeout by AI bot") -> Dict[str, any]:
+        """Ban or timeout a user in a channel.
+
+        Args:
+            broadcaster_id: The ID of the broadcaster whose chat the user is being banned from
+            moderator_id: The ID of the moderator issuing the ban (must match auth token)
+            user_login: The login name of the user to ban
+            duration: Duration in seconds (1-1209600). Defaults to 1 second.
+            reason: Reason for the ban (max 500 chars)
+
+        Returns:
+            Dict with:
+                - success (bool): True if ban successful
+                - error (str): Error message if failed, None otherwise
+                - user_name (str): Display name of banned user
+                - ends_at (str): When the timeout ends (ISO format)
+        """
+        # Use external authenticated client if available, otherwise use internal client
+        client = self._external_twitch if self._external_twitch else self.twitch
+
+        if not client:
+            # Ensure client is initialized
+            if not self._initialized:
+                init_success = await self.initialize()
+                if not init_success:
+                    return {
+                        "success": False,
+                        "error": "Failed to initialize Twitch API client",
+                        "user_name": None,
+                        "ends_at": None
+                    }
+                client = self.twitch
+
+        try:
+            # First, get the user ID from the login name
+            users = []
+            async for user in client.get_users(logins=[user_login.lower()]):
+                users.append(user)
+
+            if not users:
+                return {
+                    "success": False,
+                    "error": f"User '{user_login}' not found",
+                    "user_name": None,
+                    "ends_at": None
+                }
+
+            user = users[0]
+            user_id = user.id
+            user_name = user.display_name
+
+            # Validate duration (1 second to 2 weeks)
+            duration = max(1, min(1209600, duration))
+
+            # Ban the user with the specified duration
+            result = await client.ban_user(
+                broadcaster_id=broadcaster_id,
+                moderator_id=moderator_id,
+                user_id=user_id,
+                duration=duration,
+                reason=reason
+            )
+
+            print(f"✓ Banned user '{user_name}' for {duration} second(s)")
+
+            return {
+                "success": True,
+                "error": None,
+                "user_name": user_name,
+                "ends_at": result.end_time.isoformat() if result.end_time else None
+            }
+
+        except Exception as e:
+            print(f"✗ Error banning user '{user_login}': {e}")
+            return {
+                "success": False,
+                "error": f"Ban failed: {str(e)}",
+                "user_name": None,
+                "ends_at": None
+            }
+
+    async def get_user_info(self, user_login: str) -> Dict[str, any]:
+        """Get information about a Twitch user by their username.
+
+        Args:
+            user_login: The login name of the user to look up
+
+        Returns:
+            Dict with:
+                - success (bool): True if user found
+                - error (str): Error message if failed, None otherwise
+                - user_data (dict): User information including:
+                    - id: User ID
+                    - login: Login name
+                    - display_name: Display name
+                    - description: Bio/description
+                    - profile_image_url: Profile picture URL
+                    - created_at: Account creation date (ISO format)
+                    - broadcaster_type: Type (partner, affiliate, or empty)
+                    - view_count: Total channel views
+        """
+        # Use external authenticated client if available, otherwise use internal client
+        client = self._external_twitch if self._external_twitch else self.twitch
+
+        if not client:
+            # Ensure client is initialized
+            if not self._initialized:
+                init_success = await self.initialize()
+                if not init_success:
+                    return {
+                        "success": False,
+                        "error": "Failed to initialize Twitch API client",
+                        "user_data": None
+                    }
+                client = self.twitch
+
+        try:
+            # Get user by login name
+            users = []
+            async for user in client.get_users(logins=[user_login.lower()]):
+                users.append(user)
+
+            if not users:
+                return {
+                    "success": False,
+                    "error": f"User '{user_login}' not found",
+                    "user_data": None
+                }
+
+            user = users[0]
+
+            # Build user data dict
+            user_data = {
+                "id": user.id,
+                "login": user.login,
+                "display_name": user.display_name,
+                "description": user.description or "No bio",
+                "profile_image_url": user.profile_image_url,
+                "created_at": user.created_at.isoformat() if user.created_at else None,
+                "broadcaster_type": user.broadcaster_type or "normal user",
+                "view_count": user.view_count
+            }
+
+            print(f"✓ Fetched info for user: {user.display_name}")
+
+            return {
+                "success": True,
+                "error": None,
+                "user_data": user_data
+            }
+
+        except Exception as e:
+            print(f"✗ Error fetching user info for '{user_login}': {e}")
+            return {
+                "success": False,
+                "error": f"Failed to fetch user info: {str(e)}",
+                "user_data": None
             }
 
     async def close(self):

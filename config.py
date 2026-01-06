@@ -47,6 +47,16 @@ MAX_MESSAGES_PER_HOUR = int(os.getenv("MAX_MESSAGES_PER_HOUR", "10"))
 # Web Search Configuration
 WEB_SEARCH_NOTIFICATION = os.getenv("WEB_SEARCH_NOTIFICATION", "false").lower() == "true"
 
+# Tool Configuration - Enable/disable specific tools for LLMs
+# Available tools: "screenshot", "web_search", "ban_user", "user_info"
+# Remove any tool from this list to disable it for both Gemini and Ollama
+ENABLED_TOOLS = [
+    "screenshot",      # Capture Twitch stream screenshots
+    "web_search",      # Search the web for information
+    "ban_user",        # 1-second timeout as a joke (requires moderator permissions)
+    "user_info"        # Fetch Twitch user profile information
+]
+
 # Ad Detection Configuration
 AD_DETECTION_ENABLED = os.getenv("AD_DETECTION_ENABLED", "true").lower() == "true"
 AD_DETECTION_CHECK_INTERVAL = float(os.getenv("AD_DETECTION_CHECK_INTERVAL", "5.0"))  # Check every 5 seconds
@@ -71,7 +81,8 @@ USER_SCOPES = [
     AuthScope.CHAT_READ,
     AuthScope.CHAT_EDIT,
     AuthScope.USER_READ_CHAT,
-    AuthScope.USER_WRITE_CHAT
+    AuthScope.USER_WRITE_CHAT,
+    AuthScope.MODERATOR_MANAGE_BANNED_USERS
 ]
 
 # System Prompt for LLM (Full personality for final response)
@@ -134,7 +145,21 @@ Available tools:
    - IMPORTANT: This tool automatically checks if the stream is live first. If offline, it returns an error - you should inform the user the stream is offline.
    - Has optional 'channel' parameter to specify which Twitch channel to capture
    - Default channel is '{TWITCH_CHANNEL}' (use this most of the time unless user asks about a different channel)
+
 2. web_search - ONLY use when the user EXPLICITLY asks you to search the web OR when the question absolutely requires real-time data you cannot possibly know.
+
+3. ban_user - EXTREMELY RARE tool. ONLY use when ALL of these conditions are met:
+   - User EXPLICITLY and DIRECTLY says to "ban [username]" or "timeout [username]"
+   - The request uses imperative/command form (not just mentioning banning)
+   - It's clearly meant as a joke/meme (not just discussing bans)
+   - A specific username is provided
+   - DO NOT use for: discussions about bans, questions about bans, jokes that mention banning but don't command it, sarcasm, or vague references
+   - Examples of VALID use: "ban john123", "timeout bob", "can you ban alice"
+   - Examples of INVALID use: "this guy should be banned", "lol ban worthy", "someone ban this dude", "I'm gonna get banned", "don't ban me"
+
+4. get_user_info - Use when user asks for information about a specific Twitch user's profile, account details, creation date, or bio.
+   - Use when: "who is [username]?", "when did [username] create their account?", "tell me about [username]", "what's [username]'s bio?"
+   - Needs a specific username to look up
 
 WHEN TO USE web_search (STRICT criteria - ALL must apply):
 - User explicitly says "search", "google", "look up", "find online", or similar
@@ -154,8 +179,9 @@ WHEN NOT TO use web_search (DEFAULT - prefer NO search):
 
 Guidelines:
 - DEFAULT TO NO TOOLS - most questions don't need tools
-- When in doubt, DON'T use web_search - just answer from your knowledge
-- You can call multiple tools if needed
+- When in doubt, DON'T use tools - just answer from your knowledge
+- The ban_user tool should be EXTREMELY RARE - be very conservative with it
+- You can call multiple tools if needed (except ban_user which should be alone)
 - When screenshot tool returns offline status, inform the user naturally
 
 IMPORTANT - Content Safety:

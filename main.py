@@ -71,6 +71,11 @@ async def run() -> None:
         await twitch.close()
         return
 
+    # Set the authenticated Twitch client for the API client (for ban/user operations)
+    from twitch_api import get_twitch_client
+    api_client = get_twitch_client()
+    api_client.set_authenticated_client(twitch)
+
     # Create chat instance
     chat = await Chat(twitch)
 

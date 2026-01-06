@@ -5,9 +5,23 @@ Gemini LLM implementation with tool support.
 from google import genai
 from google.genai import types
 
-from config import GEMINI_API_KEY, GEMINI_MODEL, GEMINI_SMALLER_MODEL, SYSTEM_PROMPT, TOOL_DETECTION_PROMPT, WEBSITE_SELECTION_PROMPT, CONTENT_EXTRACTION_PROMPT
-from tools import capture_stream_screenshot, perform_web_search, scrape_website, GEMINI_SCREENSHOT_TOOL, GEMINI_WEB_SEARCH_TOOL
+from config import GEMINI_API_KEY, GEMINI_MODEL, GEMINI_SMALLER_MODEL, SYSTEM_PROMPT, TOOL_DETECTION_PROMPT, WEBSITE_SELECTION_PROMPT, CONTENT_EXTRACTION_PROMPT, ENABLED_TOOLS
+from tools import capture_stream_screenshot, perform_web_search, scrape_website, ban_user_from_chat, fetch_user_data, GEMINI_SCREENSHOT_TOOL, GEMINI_WEB_SEARCH_TOOL, GEMINI_BAN_TOOL, GEMINI_USER_INFO_TOOL
 from .base import BaseLLM
+
+
+def _get_enabled_gemini_tools():
+    """Get list of enabled Gemini tools based on ENABLED_TOOLS config."""
+    tool_map = {
+        "screenshot": GEMINI_SCREENSHOT_TOOL,
+        "web_search": GEMINI_WEB_SEARCH_TOOL,
+        "ban_user": GEMINI_BAN_TOOL,
+        "user_info": GEMINI_USER_INFO_TOOL
+    }
+    enabled = [tool_map[tool_name] for tool_name in ENABLED_TOOLS if tool_name in tool_map]
+    if enabled:
+        print(f"[Gemini] Enabled tools: {', '.join(ENABLED_TOOLS)}")
+    return enabled
 
 
 class GeminiLLM(BaseLLM):
@@ -87,11 +101,13 @@ class GeminiLLM(BaseLLM):
             "screenshot_error": None
         }
 
-        # Define custom tools
-        custom_tools = types.Tool(function_declarations=[
-            GEMINI_SCREENSHOT_TOOL,
-            GEMINI_WEB_SEARCH_TOOL
-        ])
+        # Define custom tools based on enabled tools configuration
+        enabled_tools = _get_enabled_gemini_tools()
+        if not enabled_tools:
+            print("[Gemini] No tools enabled, skipping tool detection")
+            return result
+
+        custom_tools = types.Tool(function_declarations=enabled_tools)
 
         # Build messages for tool detection
         messages = [types.Content(role="user", parts=[types.Part(text=full_prompt)])]
@@ -317,6 +333,103 @@ class GeminiLLM(BaseLLM):
                         print(f"[Tool Result] No results found")
                     else:
                         print(f"[Tool Result] Search failed: {search_result['error']}")
+
+            elif function_call.name == "ban_user":
+                # Extract parameters
+                user_login = function_call.args.get("user_login", "")
+
+                if not user_login:
+                    print(f"[Gemini] Ban tool called without user_login")
+                    result["ban_error"] = "No username provided"
+                    continue
+
+                print(f"[Gemini] Attempting to ban user: {user_login}")
+
+                # Get broadcaster and moderator IDs from database/context
+                # For now, we need to get these from the current channel context
+                # We'll need to pass these from the get_response method
+                # For MVP, we'll store these as class variables or pass them through
+
+                # Get the IDs - we need broadcaster_id and moderator_id
+                # The moderator_id should be the bot's user ID
+                # The broadcaster_id should be the channel's user ID
+
+                # Import twitch client to get IDs
+                from twitch_api import get_twitch_client
+                twitch_client = get_twitch_client()
+
+                # Get broadcaster ID from channel name
+                broadcaster_users = []
+                async for user in twitch_client.twitch.get_users(logins=[channel.lower()]):
+                    broadcaster_users.append(user)
+
+                if not broadcaster_users:
+                    print(f"[Tool Result] Could not find broadcaster '{channel}'")
+                    result["ban_error"] = f"Could not find channel '{channel}'"
+                    continue
+
+                broadcaster_id = broadcaster_users[0].id
+
+                # Get moderator ID (bot's own user ID)
+                moderator_users = []
+                async for user in twitch_client.twitch.get_users():
+                    moderator_users.append(user)
+
+                if not moderator_users:
+                    print(f"[Tool Result] Could not get bot user ID")
+                    result["ban_error"] = "Could not authenticate bot"
+                    continue
+
+                moderator_id = moderator_users[0].id
+
+                # Execute the ban
+                ban_result = await ban_user_from_chat(
+                    user_login=user_login,
+                    broadcaster_id=broadcaster_id,
+                    moderator_id=moderator_id,
+                    duration=1
+                )
+
+                if ban_result["success"]:
+                    print(f"[Tool Result] Successfully banned {ban_result['user_name']} for 1 second")
+                    result["ban_result"] = f"Successfully timed out {ban_result['user_name']} for 1 second"
+                else:
+                    print(f"[Tool Result] Ban failed: {ban_result['error']}")
+                    result["ban_error"] = ban_result["error"]
+
+            elif function_call.name == "get_user_info":
+                # Extract parameters
+                user_login = function_call.args.get("user_login", "")
+
+                if not user_login:
+                    print(f"[Gemini] User info tool called without user_login")
+                    result["user_info_error"] = "No username provided"
+                    continue
+
+                print(f"[Gemini] Fetching user info for: {user_login}")
+
+                # Execute the user info fetch
+                user_info_result = await fetch_user_data(user_login=user_login)
+
+                if user_info_result["success"]:
+                    user_data = user_info_result["user_data"]
+                    print(f"[Tool Result] Successfully fetched info for {user_data['display_name']}")
+
+                    # Format user data as readable text
+                    user_info_text = f"""User Info for {user_data['display_name']}:
+- Username: {user_data['login']}
+- Display Name: {user_data['display_name']}
+- User ID: {user_data['id']}
+- Bio: {user_data['description']}
+- Account Created: {user_data['created_at']}
+- Broadcaster Type: {user_data['broadcaster_type']}
+- Total Views: {user_data['view_count']:,}
+- Profile Image: {user_data['profile_image_url']}"""
+
+                    result["user_info_data"] = user_info_text
+                else:
+                    print(f"[Tool Result] User info fetch failed: {user_info_result['error']}")
+                    result["user_info_error"] = user_info_result["error"]
 
         return result
 
@@ -558,6 +671,26 @@ Extract only the most relevant information that answers the user's question. Be 
         if tool_results["search_results"]:
             print("[Gemini] Adding search results to final response context")
             message_parts.append(types.Part(text=f"\n\n{tool_results['search_results']}"))
+
+        # Add ban result if available
+        if tool_results.get("ban_result"):
+            print(f"[Gemini] Adding ban result to context: {tool_results['ban_result']}")
+            message_parts.append(types.Part(text=f"\n\n[BAN TOOL RESULT]: {tool_results['ban_result']}"))
+
+        # Add ban error if ban was attempted but failed
+        if tool_results.get("ban_error"):
+            print(f"[Gemini] Adding ban error to context: {tool_results['ban_error']}")
+            message_parts.append(types.Part(text=f"\n\n[BAN TOOL ERROR]: {tool_results['ban_error']}"))
+
+        # Add user info data if available
+        if tool_results.get("user_info_data"):
+            print(f"[Gemini] Adding user info data to context")
+            message_parts.append(types.Part(text=f"\n\n[USER INFO DATA]:\n{tool_results['user_info_data']}"))
+
+        # Add user info error if fetch was attempted but failed
+        if tool_results.get("user_info_error"):
+            print(f"[Gemini] Adding user info error to context: {tool_results['user_info_error']}")
+            message_parts.append(types.Part(text=f"\n\n[USER INFO ERROR]: {tool_results['user_info_error']}"))
 
         # Create single user message with all parts
         user_messages = [types.Content(role="user", parts=message_parts)]
