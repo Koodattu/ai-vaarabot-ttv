@@ -66,7 +66,6 @@ AD_DETECTION_MAX_WAIT = float(os.getenv("AD_DETECTION_MAX_WAIT", "120.0"))  # Ma
 DEBUG_LOGGING = os.getenv("DEBUG_LOGGING", "false").lower() == "true"
 
 # Context Configuration
-MAX_HISTORY_PER_USER = 10
 RAG_RESULTS_COUNT = 20
 RECENT_CHAT_COUNT = 5
 RECENT_USER_COUNT = 5
