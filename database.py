@@ -236,7 +236,7 @@ class Database:
         similar_from_bot = self.search_similar_messages(
             channel,
             current_message,
-            limit=RAG_RESULTS_COUNT // 3,  # Allocate 1/3 of results
+            limit=RAG_RESULTS_COUNT // 4,  # Allocate 1/4 of results
             is_bot=True
         )
         if similar_from_bot:
@@ -247,7 +247,7 @@ class Database:
         similar_general = self.search_similar_messages(
             channel,
             current_message,
-            limit=RAG_RESULTS_COUNT // 3  # Allocate 1/3 of results
+            limit=RAG_RESULTS_COUNT // 2  # Allocate 1/2 of results
         )
         if similar_general:
             general_rag_lines = [msg['text'] for msg in similar_general]

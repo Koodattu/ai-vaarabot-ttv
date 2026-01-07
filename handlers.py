@@ -51,12 +51,33 @@ class ChatHandlers:
 
         print(badges)
 
-        # Format username with badge for storage
+        # Check for subscriber badge and duration
+        # badges is a dict like {'subscriber': '3066', 'broadcaster': '1', 'premium': '1'}
+        # Subscriber badge value format: TXXX where T=tier (1-3) and XXX=months
+        sub_info = None
+        if badges and isinstance(badges, dict) and "subscriber" in badges:
+            try:
+                badge_value = int(badges["subscriber"])
+                if badge_value >= 1000:
+                    # Extract tier (first digit) and months (remaining digits)
+                    tier = badge_value // 1000
+                    months = badge_value % 1000
+                    sub_info = (tier, months)
+                else:
+                    # Regular badge value (just months, assume tier 1)
+                    sub_info = (1, badge_value)
+            except (ValueError, TypeError):
+                pass
+
+        # Format username with badge for storage (priority: MOD > VIP > SUB)
         formatted_user_name = user_name
         if is_mod:
             formatted_user_name = f"[MOD] {user_name}"
         elif is_vip:
             formatted_user_name = f"[VIP] {user_name}"
+        elif sub_info:
+            tier, months = sub_info
+            formatted_user_name = f"[T{tier}-{months}M] {user_name}"
 
         # Ignore our own messages
         if msg.user.name.lower() == self.bot_username:
