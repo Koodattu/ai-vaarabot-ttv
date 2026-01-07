@@ -813,7 +813,7 @@ async def capture_screenshot_with_ad_detection(channel: str, llm_provider, simpl
 # Tool declarations for Gemini
 GEMINI_SCREENSHOT_TOOL = {
     "name": "capture_stream_screenshot",
-    "description": f"Captures a screenshot of a Twitch livestream. IMPORTANT: This tool first checks if the stream is live. If the stream is offline, it will return an error message indicating the stream is offline - you should inform the user the stream is not currently live. Use this when a user asks to see what's happening on stream, wants to know what's on screen, or asks about the current stream content. The default channel is '{TWITCH_CHANNEL}' (most of the time use this default unless the user specifically asks about a different channel).",
+    "description": f"Captures a screenshot of a Twitch livestream. Use this when a user asks to see what's happening on stream, wants to know what's on screen, or asks about the current stream content. The default channel is '{TWITCH_CHANNEL}' (most of the time use this default unless the user specifically asks about a different channel).",
     "parameters": {
         "type": "object",
         "properties": {
