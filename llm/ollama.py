@@ -462,6 +462,16 @@ Which results (1-{len(numbered_results)}) are most relevant to answer the user's
 
             selected_indices = json.loads(selection_json)
 
+            # Handle both nested {"results": [...]} and direct [...] formats
+            if isinstance(selected_indices, dict):
+                if "results" in selected_indices:
+                    selected_indices = selected_indices["results"]
+                    if DEBUG_LOGGING:
+                        print(f"[DEBUG] Extracted nested results: {selected_indices}")
+                else:
+                    print("[Ollama] Invalid selection format (dict without 'results'), defaulting to first result")
+                    selected_indices = [1]
+
             if DEBUG_LOGGING:
                 print(f"[DEBUG] Parsed indices: {selected_indices}")
 
@@ -485,18 +495,18 @@ Which results (1-{len(numbered_results)}) are most relevant to answer the user's
                 scrape_result = scrape_website(url)
 
                 if scrape_result["success"]:
-                    scraped_text = scrape_result["content"]
+                    scraped_text = scrape_result["text"]  # Note: scrape_website returns "text" not "content"
                     print(f"[Ollama] Scraped {len(scraped_text)} characters from {title}")
 
                     if DEBUG_LOGGING:
                         print(f"[DEBUG] First 200 chars of scraped content: {scraped_text[:200]}...")
 
                     # Extract relevant content
-                    extracted = self._extract_relevant_content(user_message, scraped_text, url, title)
-                    if extracted and extracted != "No relevant information found.":
-                        all_extracted_content.append(f"From {title}:\n{extracted}")
+                    extraction_result = self._extract_relevant_content(user_message, scraped_text, url, title)
+                    if extraction_result['has_content'] and extraction_result['content']:
+                        all_extracted_content.append(f"From {title}:\n{extraction_result['content']}")
                         if DEBUG_LOGGING:
-                            print(f"[DEBUG] Extracted content length: {len(extracted)} chars")
+                            print(f"[DEBUG] Extracted content length: {len(extraction_result['content'])} chars")
                 else:
                     print(f"[Ollama] Failed to scrape {url}: {scrape_result.get('error', 'Unknown error')}")
 
@@ -521,7 +531,7 @@ Which results (1-{len(numbered_results)}) are most relevant to answer the user's
                 print(f"[DEBUG] Full traceback:\n{traceback.format_exc()}")
             return None
 
-    def _extract_relevant_content(self, user_question: str, scraped_text: str, url: str, title: str) -> str | None:
+    def _extract_relevant_content(self, user_question: str, scraped_text: str, url: str, title: str) -> dict:
         """Use model to extract only relevant information from scraped content.
 
         Args:
@@ -531,11 +541,11 @@ Which results (1-{len(numbered_results)}) are most relevant to answer the user's
             title: The title of the webpage
 
         Returns:
-            Compacted relevant content (2-4 sentences), or None if extraction failed
+            Dict with 'has_content': bool and 'content': str (empty if no relevant content)
         """
         print(f"[Ollama] Using {OLLAMA_MODEL} for content extraction from {title}...")
 
-        # Create extraction prompt
+        # Create extraction prompt for structured output
         extraction_prompt = f"""User question: {user_question}
 
 Webpage: {title}
@@ -544,7 +554,13 @@ URL: {url}
 Webpage content:
 {scraped_text}
 
-Extract only the most relevant information that answers the user's question. Be concise (2-4 sentences max)."""
+Analyze if this webpage contains relevant information to answer the user's question. If it does, extract and compact it (2-4 sentences max).
+
+Reply with JSON in this format:
+{{
+  "has_content": true/false,
+  "content": "extracted relevant information here (or empty string if no relevant content)"
+}}"""
 
         try:
             response = self.client.chat(
@@ -553,16 +569,41 @@ Extract only the most relevant information that answers the user's question. Be 
                     {'role': 'system', 'content': CONTENT_EXTRACTION_PROMPT},
                     {'role': 'user', 'content': extraction_prompt}
                 ],
+                format='json',
                 options={'temperature': 0.3}
             )
 
-            extracted_content = response.message.content.strip()
-            print(f"[Ollama] Extracted: {extracted_content[:100]}...")
-            return extracted_content
+            # Parse JSON response
+            result_json = response.message.content.strip()
+            if DEBUG_LOGGING:
+                print(f"[DEBUG] Extraction JSON response: {result_json[:200]}...")
 
+            result = json.loads(result_json)
+
+            has_content = result.get('has_content', False)
+            content = result.get('content', '').strip()
+
+            if has_content and content:
+                print(f"[Ollama] Extracted: {content[:100]}...")
+            else:
+                print(f"[Ollama] No relevant content found in {title}")
+
+            return {
+                'has_content': has_content,
+                'content': content
+            }
+
+        except json.JSONDecodeError as e:
+            print(f"[Ollama] Content extraction JSON parse failed: {e}")
+            if DEBUG_LOGGING:
+                print(f"[DEBUG] Problematic extraction JSON: {result_json}")
+            return {'has_content': False, 'content': ''}
         except Exception as e:
             print(f"[Ollama] Content extraction failed: {e}")
-            return None
+            if DEBUG_LOGGING:
+                import traceback
+                print(f"[DEBUG] Full traceback:\n{traceback.format_exc()}")
+            return {'has_content': False, 'content': ''}
 
     def _generate_final_response(self, context_message: str, user_prompt: str, tool_results: dict) -> str:
         """Use model to generate final response with tool results.
