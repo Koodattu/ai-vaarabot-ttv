@@ -11,6 +11,7 @@ from pathlib import Path
 from streamlink.session import Streamlink
 from streamlink.options import Options
 from bs4 import BeautifulSoup
+from ddgs import DDGS
 import cloudscraper
 from PIL import Image
 import pytesseract
@@ -436,8 +437,98 @@ async def capture_stream_screenshot(channel: str = TWITCH_CHANNEL, skip_live_che
         }
 
 
+def perform_duckduckgo_search(query: str, num_results: int = 5) -> dict:
+    """Perform a DuckDuckGo Search using DDGS library (for Ollama).
+
+    Searches with both Finnish and English regions to get comprehensive results.
+
+    Returns a dict with success status, results list, and any error message.
+    Each result contains: title, link, snippet
+    """
+    try:
+        print(f"[DuckDuckGo Search] Query: {query}, Max results: {num_results}")
+
+        # Initialize DDGS
+        ddgs = DDGS()
+
+        # Perform searches in both Finnish and English regions
+        # We'll get results from both and combine them
+        all_results = []
+        seen_urls = set()
+
+        # Search in Finnish region first
+        try:
+            fi_results = ddgs.text(
+                query=query,
+                region="fi-fi",  # Finland - Finnish
+                safesearch="moderate",
+                max_results=num_results,
+                backend="auto"
+            )
+            for result in fi_results:
+                url = result.get('href', '')
+                if url and url not in seen_urls:
+                    seen_urls.add(url)
+                    all_results.append({
+                        'title': result.get('title', 'No title'),
+                        'link': url,
+                        'snippet': result.get('body', 'No description')
+                    })
+        except Exception as e:
+            print(f"[DuckDuckGo Search] Finnish region search failed: {e}")
+
+        # Search in English region if we need more results
+        if len(all_results) < num_results:
+            try:
+                en_results = ddgs.text(
+                    query=query,
+                    region="us-en",  # United States - English
+                    safesearch="moderate",
+                    max_results=num_results,
+                    backend="auto"
+                )
+                for result in en_results:
+                    if len(all_results) >= num_results:
+                        break
+                    url = result.get('href', '')
+                    if url and url not in seen_urls:
+                        seen_urls.add(url)
+                        all_results.append({
+                            'title': result.get('title', 'No title'),
+                            'link': url,
+                            'snippet': result.get('body', 'No description')
+                        })
+            except Exception as e:
+                print(f"[DuckDuckGo Search] English region search failed: {e}")
+
+        # Limit to requested number of results
+        all_results = all_results[:num_results]
+
+        if not all_results:
+            return {
+                "success": False,
+                "error": "No search results found",
+                "results": []
+            }
+
+        print(f"[DuckDuckGo Search] Found {len(all_results)} results")
+        return {
+            "success": True,
+            "error": None,
+            "results": all_results
+        }
+
+    except Exception as e:
+        print(f"[DuckDuckGo Search] Error: {e}")
+        return {
+            "success": False,
+            "error": f"DuckDuckGo search failed: {str(e)}",
+            "results": []
+        }
+
+
 def perform_web_search(query: str, num_results: int = 5, language: str = "lang_en|lang_fi") -> dict:
-    """Perform a Google Custom Search and return results.
+    """Perform a Google Custom Search and return results (for Gemini).
 
     Returns a dict with success status, results list, and any error message.
     Each result contains: title, link, snippet
@@ -803,7 +894,7 @@ OLLAMA_WEB_SEARCH_TOOL = {
     "type": "function",
     "function": {
         "name": "web_search",
-        "description": "Search the web ONLY when absolutely necessary. Use ONLY if: (1) user explicitly asks to search/google something, (2) question is about breaking news from the last 24-48 hours, (3) user needs a live price/score/value, or (4) you genuinely cannot answer from your training data. DO NOT use for general knowledge, games, movies, tech, history, science, or anything you already know. When in doubt, just answer without searching.",
+        "description": "Search the web using DuckDuckGo ONLY when absolutely necessary. Use ONLY if: (1) user explicitly asks to search/google something, (2) question is about breaking news from the last 24-48 hours, (3) user needs a live price/score/value, or (4) you genuinely cannot answer from your training data. DO NOT use for general knowledge, games, movies, tech, history, science, or anything you already know. When in doubt, just answer without searching.",
         "parameters": {
             "type": "object",
             "properties": {

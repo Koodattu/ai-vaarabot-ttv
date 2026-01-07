@@ -41,8 +41,8 @@ TARGET_CHANNELS = [ch.strip().lower() for ch in _raw_channels.split(",") if ch.s
 TWITCH_CHANNEL = "ishowspeed"  # Channel for screenshots
 
 # Rate Limiting Configuration
-USER_TIMEOUT_SECONDS = float(os.getenv("USER_TIMEOUT_SECONDS", "5"))
-MAX_MESSAGES_PER_HOUR = int(os.getenv("MAX_MESSAGES_PER_HOUR", "10"))
+USER_TIMEOUT_SECONDS = float(os.getenv("USER_TIMEOUT_SECONDS", "1"))
+MAX_MESSAGES_PER_HOUR = int(os.getenv("MAX_MESSAGES_PER_HOUR", "100"))
 
 # Web Search Configuration
 WEB_SEARCH_NOTIFICATION = os.getenv("WEB_SEARCH_NOTIFICATION", "false").lower() == "true"
@@ -58,9 +58,12 @@ ENABLED_TOOLS = [
 ]
 
 # Ad Detection Configuration
-AD_DETECTION_ENABLED = os.getenv("AD_DETECTION_ENABLED", "true").lower() == "true"
+AD_DETECTION_ENABLED = os.getenv("AD_DETECTION_ENABLED", "false").lower() == "true"
 AD_DETECTION_CHECK_INTERVAL = float(os.getenv("AD_DETECTION_CHECK_INTERVAL", "5.0"))  # Check every 5 seconds
 AD_DETECTION_MAX_WAIT = float(os.getenv("AD_DETECTION_MAX_WAIT", "120.0"))  # Max 30 seconds wait
+
+# Debug Logging Configuration
+DEBUG_LOGGING = os.getenv("DEBUG_LOGGING", "false").lower() == "true"
 
 # Context Configuration
 MAX_HISTORY_PER_USER = 10

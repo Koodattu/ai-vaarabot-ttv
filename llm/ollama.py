@@ -5,8 +5,8 @@ Ollama LLM implementation with tool support.
 import json
 from ollama import Client
 
-from config import OLLAMA_MODEL, OLLAMA_HOST, SYSTEM_PROMPT, TOOL_DETECTION_PROMPT, WEBSITE_SELECTION_PROMPT, CONTENT_EXTRACTION_PROMPT, ENABLED_TOOLS
-from tools import capture_stream_screenshot, perform_web_search, scrape_website, ban_user_from_chat, fetch_user_data, OLLAMA_SCREENSHOT_TOOL, OLLAMA_WEB_SEARCH_TOOL, OLLAMA_BAN_TOOL, OLLAMA_USER_INFO_TOOL
+from config import OLLAMA_MODEL, OLLAMA_HOST, SYSTEM_PROMPT, TOOL_DETECTION_PROMPT, WEBSITE_SELECTION_PROMPT, CONTENT_EXTRACTION_PROMPT, ENABLED_TOOLS, DEBUG_LOGGING
+from tools import capture_stream_screenshot, perform_duckduckgo_search, scrape_website, ban_user_from_chat, fetch_user_data, OLLAMA_SCREENSHOT_TOOL, OLLAMA_WEB_SEARCH_TOOL, OLLAMA_BAN_TOOL, OLLAMA_USER_INFO_TOOL
 from .base import BaseLLM
 
 
@@ -105,6 +105,10 @@ class OllamaLLM(BaseLLM):
 
         print(f"[Ollama] Using {OLLAMA_MODEL} for tool detection...")
 
+        if DEBUG_LOGGING:
+            print(f"[DEBUG] Tool detection with {len(enabled_tools)} enabled tools")
+            print(f"[DEBUG] Full prompt length: {len(full_prompt)} chars")
+
         # Request with model for tool detection
         response = self.client.chat(
             model=OLLAMA_MODEL,
@@ -124,6 +128,11 @@ class OllamaLLM(BaseLLM):
                     'name': tool_call.function.name,
                     'args': tool_call.function.arguments if hasattr(tool_call.function, 'arguments') else {}
                 })
+
+            if DEBUG_LOGGING:
+                print(f"[DEBUG] Detected {len(tool_calls)} tool calls:")
+                for tc in tool_calls:
+                    print(f"[DEBUG]   - {tc['name']}: {tc['args']}")
 
         # Check if BOTH screenshot and web_search are requested
         has_screenshot = any(tc['name'] == "capture_stream_screenshot" for tc in tool_calls)
@@ -168,15 +177,17 @@ class OllamaLLM(BaseLLM):
 
                 if enriched_query:
                     print(f"[Ollama] Enriched search query: {enriched_query}")
-                    # Perform web search with enriched query
-                    search_result = perform_web_search(enriched_query)
+                    # Perform web search with enriched query using DuckDuckGo
+                    search_result = perform_duckduckgo_search(enriched_query)
                     if search_result["success"]:
+                        if DEBUG_LOGGING:
+                            print(f"[DEBUG] Search returned {len(search_result['results'])} results")
                         # Use multi-website selection and extraction
                         compacted_content = self._select_scrape_and_extract(user_message, search_result["results"])
                         if compacted_content:
                             result["search_results"] = compacted_content
                     else:
-                        print(f"[Ollama] Web search failed: {search_result.get('error', 'Unknown error')}")
+                        print(f"[Ollama] DuckDuckGo search failed: {search_result.get('error', 'Unknown error')}")
                 else:
                     print("[Ollama] Failed to generate enriched query, proceeding without web search")
             else:
@@ -232,7 +243,7 @@ class OllamaLLM(BaseLLM):
                 # Handle web search tool
                 elif tool_name == "web_search":
                     query = tool_args.get("query", "")
-                    print(f"[Ollama] Performing web search: {query}")
+                    print(f"[Ollama] Performing DuckDuckGo search: {query}")
 
                     from config import WEB_SEARCH_NOTIFICATION
                     if WEB_SEARCH_NOTIFICATION and msg_callback:
@@ -241,10 +252,15 @@ class OllamaLLM(BaseLLM):
                         except Exception as e:
                             print(f"[Ollama] Failed to send search notification: {e}")
 
-                    search_result = perform_web_search(query)
+                    search_result = perform_duckduckgo_search(query)
 
                     if search_result["success"]:
-                        print(f"[Ollama] Search returned {len(search_result['results'])} results")
+                        print(f"[Ollama] DuckDuckGo search returned {len(search_result['results'])} results")
+
+                        if DEBUG_LOGGING:
+                            print(f"[DEBUG] Search results preview:")
+                            for idx, r in enumerate(search_result['results'][:3], 1):
+                                print(f"[DEBUG]   {idx}. {r.get('title', 'No title')[:60]}...")
 
                         # Use multi-website selection and extraction
                         compacted_content = self._select_scrape_and_extract(user_message, search_result["results"])
@@ -254,8 +270,8 @@ class OllamaLLM(BaseLLM):
                         else:
                             result["search_results"] = "No relevant information found from web search."
                     else:
-                        print(f"[Ollama] Web search failed: {search_result.get('error', 'Unknown error')}")
-                        result["search_results"] = f"Web search failed: {search_result.get('error', 'Unknown error')}"
+                        print(f"[Ollama] DuckDuckGo search failed: {search_result.get('error', 'Unknown error')}")
+                        result["search_results"] = f"DuckDuckGo search failed: {search_result.get('error', 'Unknown error')}"
 
                 # Handle ban user tool
                 elif tool_name == "ban_user":
@@ -390,16 +406,29 @@ Provide ONLY the search query, nothing else. Be specific and concise (1-3 words 
 
         Args:
             user_message: The user's original question
-            results_list: List of result dicts (with number, title, snippet, link)
+            results_list: List of result dicts (with title, snippet, link)
 
         Returns:
             Compacted extracted content from all selected websites, or None if failed
         """
         print(f"[Ollama] Using {OLLAMA_MODEL} for multi-website selection...")
 
+        if DEBUG_LOGGING:
+            print(f"[DEBUG] Results list structure: {results_list[:1] if results_list else 'empty'}")
+
+        # Add numbers to results for selection (results come without 'number' field from DuckDuckGo)
+        numbered_results = []
+        for idx, item in enumerate(results_list, start=1):
+            numbered_results.append({
+                'number': idx,
+                'title': item.get('title', 'No title'),
+                'snippet': item.get('snippet', 'No description'),
+                'link': item.get('link', '')
+            })
+
         # Format results for selection
         results_text = ""
-        for item in results_list:
+        for item in numbered_results:
             results_text += f"{item['number']}. {item['title']}\n   {item['snippet']}\n   {item['link']}\n\n"
 
         # Create selection prompt
@@ -407,7 +436,10 @@ Provide ONLY the search query, nothing else. Be specific and concise (1-3 words 
 
 {results_text}
 
-Which results (1-{len(results_list)}) are most relevant to answer the user's question? Select 1-5 most useful ones. Reply with ONLY a JSON array of numbers."""
+Which results (1-{len(numbered_results)}) are most relevant to answer the user's question? Select 1-5 most useful ones. Reply with ONLY a JSON array of numbers."""
+
+        if DEBUG_LOGGING:
+            print(f"[DEBUG] Website selection prompt:\n{selection_prompt[:500]}...")
 
         # Request website selection with JSON response
         try:
@@ -425,21 +457,27 @@ Which results (1-{len(results_list)}) are most relevant to answer the user's que
             selection_json = response.message.content.strip()
             print(f"[Ollama] Selection response: {selection_json}")
 
+            if DEBUG_LOGGING:
+                print(f"[DEBUG] Raw selection JSON: {selection_json}")
+
             selected_indices = json.loads(selection_json)
+
+            if DEBUG_LOGGING:
+                print(f"[DEBUG] Parsed indices: {selected_indices}")
 
             if not isinstance(selected_indices, list) or not selected_indices:
                 print("[Ollama] Invalid selection format, defaulting to first result")
                 selected_indices = [1]
 
             # Validate and cap selections
-            selected_indices = [idx for idx in selected_indices if 1 <= idx <= len(results_list)][:5]
-            print(f"[Ollama] Selected {len(selected_indices)} websites to scrape")
+            selected_indices = [idx for idx in selected_indices if 1 <= idx <= len(numbered_results)][:5]
+            print(f"[Ollama] Selected {len(selected_indices)} websites to scrape: {selected_indices}")
 
             # Scrape and extract from each selected website
             all_extracted_content = []
 
             for idx in selected_indices:
-                result_item = results_list[idx - 1]  # Convert to 0-indexed
+                result_item = numbered_results[idx - 1]  # Convert to 0-indexed
                 url = result_item['link']
                 title = result_item['title']
 
@@ -450,10 +488,15 @@ Which results (1-{len(results_list)}) are most relevant to answer the user's que
                     scraped_text = scrape_result["content"]
                     print(f"[Ollama] Scraped {len(scraped_text)} characters from {title}")
 
+                    if DEBUG_LOGGING:
+                        print(f"[DEBUG] First 200 chars of scraped content: {scraped_text[:200]}...")
+
                     # Extract relevant content
                     extracted = self._extract_relevant_content(user_message, scraped_text, url, title)
                     if extracted and extracted != "No relevant information found.":
                         all_extracted_content.append(f"From {title}:\n{extracted}")
+                        if DEBUG_LOGGING:
+                            print(f"[DEBUG] Extracted content length: {len(extracted)} chars")
                 else:
                     print(f"[Ollama] Failed to scrape {url}: {scrape_result.get('error', 'Unknown error')}")
 
@@ -468,9 +511,14 @@ Which results (1-{len(results_list)}) are most relevant to answer the user's que
 
         except json.JSONDecodeError as e:
             print(f"[Ollama] Failed to parse selection JSON: {e}")
+            if DEBUG_LOGGING:
+                print(f"[DEBUG] Problematic JSON: {selection_json}")
             return None
         except Exception as e:
             print(f"[Ollama] Website selection/scraping failed: {e}")
+            if DEBUG_LOGGING:
+                import traceback
+                print(f"[DEBUG] Full traceback:\n{traceback.format_exc()}")
             return None
 
     def _extract_relevant_content(self, user_question: str, scraped_text: str, url: str, title: str) -> str | None:
@@ -485,7 +533,7 @@ Which results (1-{len(results_list)}) are most relevant to answer the user's que
         Returns:
             Compacted relevant content (2-4 sentences), or None if extraction failed
         """
-        print(f"[Ollama] Using {OLLAMA_MODEL} for content extraction...")
+        print(f"[Ollama] Using {OLLAMA_MODEL} for content extraction from {title}...")
 
         # Create extraction prompt
         extraction_prompt = f"""User question: {user_question}
