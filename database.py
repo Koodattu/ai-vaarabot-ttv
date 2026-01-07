@@ -84,12 +84,30 @@ class Database:
 
         return msg_id
 
-    def get_recent_chat_messages(self, channel: str, limit: int = RECENT_CHAT_COUNT) -> list[dict]:
-        """Get the most recent chat messages from any user in a specific channel."""
-        cursor = self.db_conn.execute(
-            "SELECT user_name, message, is_bot FROM messages WHERE channel = ? ORDER BY timestamp DESC LIMIT ?",
-            (channel.lower(), limit)
-        )
+    def get_recent_chat_messages(self, channel: str, limit: int = RECENT_CHAT_COUNT, exclude_user_id: str = None, exclude_bot: bool = False) -> list[dict]:
+        """
+        Get the most recent chat messages from a specific channel.
+
+        Args:
+            channel: The channel name
+            limit: Maximum number of messages to retrieve
+            exclude_user_id: Optional user_id to exclude from results
+            exclude_bot: Whether to exclude bot messages
+        """
+        query = "SELECT user_name, message, is_bot FROM messages WHERE channel = ?"
+        params = [channel.lower()]
+
+        if exclude_user_id:
+            query += " AND user_id != ?"
+            params.append(exclude_user_id)
+
+        if exclude_bot:
+            query += " AND is_bot = 0"
+
+        query += " ORDER BY timestamp DESC LIMIT ?"
+        params.append(limit)
+
+        cursor = self.db_conn.execute(query, tuple(params))
         rows = cursor.fetchall()
         return [{"user": row[0], "message": row[1], "is_bot": bool(row[2])} for row in reversed(rows)]
 
@@ -111,16 +129,37 @@ class Database:
         rows = cursor.fetchall()
         return [{"user": row[0], "message": row[1]} for row in reversed(rows)]
 
-    def search_similar_messages(self, channel: str, query: str, limit: int = RAG_RESULTS_COUNT) -> list[dict]:
-        """Search for similar messages using ChromaDB vector search, filtered by channel."""
+    def search_similar_messages(self, channel: str, query: str, limit: int = RAG_RESULTS_COUNT, user_id: str = None, is_bot: bool = None) -> list[dict]:
+        """
+        Search for similar messages using ChromaDB vector search, with optional filters.
+
+        Args:
+            channel: The channel name to filter by
+            query: The query text for vector search
+            limit: Maximum number of results to return
+            user_id: Optional user_id to filter results (only messages from this user)
+            is_bot: Optional filter for bot messages (True = only bot, False = only users, None = all)
+        """
         # Check if collection has any documents
         if self.chroma_collection.count() == 0:
             return []
 
+        # Build where clause using $and operator for multiple conditions
+        conditions = [{"channel": channel.lower()}]
+
+        if user_id is not None:
+            conditions.append({"user_id": user_id})
+
+        if is_bot is not None:
+            conditions.append({"is_bot": is_bot})
+
+        # Use $and only if multiple conditions, otherwise use single condition
+        where_clause = {"$and": conditions} if len(conditions) > 1 else conditions[0]
+
         results = self.chroma_collection.query(
             query_texts=[query],
             n_results=min(limit * 3, self.chroma_collection.count()),  # Fetch more to filter
-            where={"channel": channel.lower()}
+            where=where_clause
         )
 
         messages = []
@@ -132,45 +171,87 @@ class Database:
                 messages.append({
                     "text": doc,
                     "is_bot": metadata.get("is_bot", False),
+                    "user_name": metadata.get("user_name", "Unknown"),
                     "distance": results['distances'][0][i] if results['distances'] else 0
                 })
 
         return messages
 
     def build_context(self, channel: str, user_id: str, user_name: str, current_message: str, game_name: str = None) -> str:
-        """Build context string from various sources, scoped to a specific channel."""
+        """
+        Build context string from various sources, scoped to a specific channel.
+
+        Context includes:
+        1. Current game being played (if available)
+        2. Last 5 messages from the specific user who sent the message
+        3. Last 5 messages from the bot
+        4. Last 5 messages from other users (excluding bot and current user)
+        5. Vector search results:
+           - Most relevant messages from the current user
+           - Most relevant messages from the bot
+           - Most relevant messages from all users (general context)
+        """
         context_parts = []
 
         # Add game name if provided
         if game_name:
             context_parts.append(f"=== CURRENT GAME ===\n{game_name}")
 
-        # 1. Recent chat messages
-        recent_chat = self.get_recent_chat_messages(channel)
-        if recent_chat:
-            chat_lines = []
-            for msg in recent_chat:
-                prefix = "[BOT]" if msg["is_bot"] else ""
-                chat_lines.append(f"{prefix}{msg['user']}: {msg['message']}")
-            context_parts.append("=== RECENT CHAT ===\n" + "\n".join(chat_lines))
-
-        # 2. Recent messages from this specific user
-        recent_user = self.get_recent_user_messages(channel, user_id)
+        # 1. Recent messages from THIS specific user (SQLite)
+        recent_user = self.get_recent_user_messages(channel, user_id, limit=RECENT_USER_COUNT)
         if recent_user:
             user_lines = [f"{msg['user']}: {msg['message']}" for msg in recent_user]
             context_parts.append(f"=== RECENT FROM {user_name.upper()} ===\n" + "\n".join(user_lines))
 
-        # 3. Recent bot messages
-        recent_bot = self.get_recent_bot_messages(channel)
+        # 2. Recent bot messages (SQLite)
+        recent_bot = self.get_recent_bot_messages(channel, limit=RECENT_BOT_COUNT)
         if recent_bot:
             bot_lines = [f"{msg['user']}: {msg['message']}" for msg in recent_bot]
             context_parts.append("=== RECENT BOT RESPONSES ===\n" + "\n".join(bot_lines))
 
-        # 4. RAG - similar messages from history
-        similar = self.search_similar_messages(channel, current_message)
-        if similar:
-            rag_lines = [msg["text"] for msg in similar]
-            context_parts.append("=== RELATED PAST MESSAGES ===\n" + "\n".join(rag_lines))
+        # 3. Recent messages from OTHER users (excluding bot and current user) (SQLite)
+        recent_others = self.get_recent_chat_messages(
+            channel,
+            limit=RECENT_CHAT_COUNT,
+            exclude_user_id=user_id,
+            exclude_bot=True
+        )
+        if recent_others:
+            other_lines = [f"{msg['user']}: {msg['message']}" for msg in recent_others]
+            context_parts.append("=== RECENT FROM OTHER USERS ===\n" + "\n".join(other_lines))
+
+        # 4. RAG - Vector search for similar messages from the CURRENT USER
+        similar_from_user = self.search_similar_messages(
+            channel,
+            current_message,
+            limit=RAG_RESULTS_COUNT // 3,  # Allocate 1/3 of results
+            user_id=user_id,
+            is_bot=False
+        )
+        if similar_from_user:
+            user_rag_lines = [msg['text'] for msg in similar_from_user]
+            context_parts.append(f"=== RELATED PAST MESSAGES FROM {user_name.upper()} ===\n" + "\n".join(user_rag_lines))
+
+        # 5. RAG - Vector search for similar messages from the BOT
+        similar_from_bot = self.search_similar_messages(
+            channel,
+            current_message,
+            limit=RAG_RESULTS_COUNT // 3,  # Allocate 1/3 of results
+            is_bot=True
+        )
+        if similar_from_bot:
+            bot_rag_lines = [f"[BOT] {msg['text']}" for msg in similar_from_bot]
+            context_parts.append("=== RELATED PAST BOT RESPONSES ===\n" + "\n".join(bot_rag_lines))
+
+        # 6. RAG - Vector search for similar messages from ALL users (general context)
+        similar_general = self.search_similar_messages(
+            channel,
+            current_message,
+            limit=RAG_RESULTS_COUNT // 3  # Allocate 1/3 of results
+        )
+        if similar_general:
+            general_rag_lines = [msg['text'] for msg in similar_general]
+            context_parts.append("=== RELATED PAST MESSAGES (GENERAL) ===\n" + "\n".join(general_rag_lines))
 
         return "\n\n".join(context_parts)
 

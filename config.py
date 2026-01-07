@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # LLM Provider Configuration
-USE_OLLAMA = True  # Set to True to use Ollama locally, False for Gemini API
+USE_OLLAMA = False  # Set to True to use Ollama locally, False for Gemini API
 
 # Twitch API Configuration
 TWITCH_APP_ID = os.getenv("TWITCH_APP_ID")

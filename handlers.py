@@ -47,6 +47,9 @@ class ChatHandlers:
         channel = msg.room.name
         is_vip = msg.user.vip
         is_mod = msg.user.mod
+        badges = msg.user.badges
+
+        print(badges)
 
         # Format username with badge for storage
         formatted_user_name = user_name
