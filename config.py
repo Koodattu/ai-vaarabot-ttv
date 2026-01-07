@@ -23,7 +23,7 @@ GEMINI_MODEL = "gemini-3-flash-preview"
 GEMINI_SMALLER_MODEL = "gemini-2.5-flash-lite"
 
 # Ollama Configuration
-OLLAMA_MODEL = "gemma3-tools:27b"
+OLLAMA_MODEL = "gemma3-tools:27b"#"gemma3-enhanced:27b"
 OLLAMA_MODEL_SUPPORTS_VISION = True
 OLLAMA_VISION_MODEL = "qwen3-vl:2b"
 OLLAMA_HOST = 'http://127.0.0.1:11434'
