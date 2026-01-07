@@ -169,7 +169,7 @@ class OllamaLLM(BaseLLM):
                 if enriched_query:
                     print(f"[Ollama] Enriched search query: {enriched_query}")
                     # Perform web search with enriched query
-                    search_result = await perform_web_search(enriched_query)
+                    search_result = perform_web_search(enriched_query)
                     if search_result["success"]:
                         # Use multi-website selection and extraction
                         compacted_content = self._select_scrape_and_extract(user_message, search_result["results"])
@@ -241,7 +241,7 @@ class OllamaLLM(BaseLLM):
                         except Exception as e:
                             print(f"[Ollama] Failed to send search notification: {e}")
 
-                    search_result = await perform_web_search(query)
+                    search_result = perform_web_search(query)
 
                     if search_result["success"]:
                         print(f"[Ollama] Search returned {len(search_result['results'])} results")
