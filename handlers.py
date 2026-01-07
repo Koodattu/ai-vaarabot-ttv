@@ -157,7 +157,7 @@ class ChatHandlers:
             print(f"[Game] Failed to get game name: {e}")
 
         # Get response from LLM (channel-scoped context) - BEFORE storing current message
-        response = await self.llm_provider.get_response(channel, user_id, user_name, clean_message, self.database, game_name=game_name, msg_callback=send_chat_message)
+        response = await self.llm_provider.get_response(channel, user_id, formatted_user_name, clean_message, self.database, game_name=game_name, msg_callback=send_chat_message)
 
         # Now store the user's message (after context was built without it)
         self.database.store_message(channel, user_id, formatted_user_name, message_text, is_bot=False)
