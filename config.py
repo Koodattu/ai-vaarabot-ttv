@@ -38,7 +38,7 @@ STREAMLINK_OAUTH_TOKEN = os.getenv("STREAMLINK_OAUTH_TOKEN")
 # Channel Configuration
 _raw_channels = os.getenv("TARGET_CHANNELS", "").strip()
 TARGET_CHANNELS = [ch.strip().lower() for ch in _raw_channels.split(",") if ch.strip()] if _raw_channels else []
-TWITCH_CHANNEL = "ishowspeed"  # Channel for screenshots
+TWITCH_CHANNEL = "vaarattu"  # Channel for screenshots
 
 # Rate Limiting Configuration
 USER_TIMEOUT_SECONDS = float(os.getenv("USER_TIMEOUT_SECONDS", "1"))
@@ -53,7 +53,7 @@ WEB_SEARCH_NOTIFICATION = os.getenv("WEB_SEARCH_NOTIFICATION", "false").lower() 
 ENABLED_TOOLS = [
     "screenshot",      # Capture Twitch stream screenshots
     "web_search",      # Search the web for information
-    "ban_user",        # 1-second timeout as a joke (requires moderator permissions)
+    #"ban_user",        # 1-second timeout as a joke (requires moderator permissions)
     "user_info"        # Fetch Twitch user profile information
 ]
 
