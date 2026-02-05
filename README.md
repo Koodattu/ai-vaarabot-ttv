@@ -3,7 +3,7 @@
 A witty Twitch chat bot powered by Google Gemini AI. Responds when mentioned with personality, humor, and style.
 
 ![AI Workshop Playground Interface](images/preview.jpg)
-
+ 
 ## ✨ Features
 
 - **🎯 Mention-based** - Responds when pinged with `@botname`
