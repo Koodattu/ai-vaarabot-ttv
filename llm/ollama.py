@@ -44,7 +44,7 @@ class OllamaLLM(BaseLLM):
             print(f"✗ Ollama API test failed: {e}")
             return False
 
-    async def get_response(self, channel: str, user_id: str, user_name: str, message: str, database, game_name: str = None, msg_callback=None) -> str:
+    async def get_response(self, channel: str, user_id: str, user_name: str, message: str, database, game_name: str = None, msg_callback=None, allow_tools: bool = True) -> str:
         """Get response from Ollama with RAG context and tool support."""
         try:
             # Build context from database (channel-scoped)
@@ -65,7 +65,15 @@ class OllamaLLM(BaseLLM):
             # STEP 1: Use model to detect which tools to use
             # For tool detection, combine context and message
             full_prompt = f"{context_message}\n\n=== CURRENT MESSAGE ===\n{user_prompt}" if context_message else user_prompt
-            tool_results = await self._detect_and_execute_tools(full_prompt, user_prompt, channel, message, msg_callback)
+            tool_results = {
+                "screenshot_data": None,
+                "search_results": None,
+                "screenshot_error": None
+            }
+            if allow_tools:
+                tool_results = await self._detect_and_execute_tools(full_prompt, user_prompt, channel, message, msg_callback)
+            else:
+                print("[Ollama] Tool detection skipped for queued streamer speech")
 
             # STEP 2: Use model to generate final response with restructured messages
             final_response = self._generate_final_response(channel, context_message, user_prompt, tool_results)

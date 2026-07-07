@@ -97,7 +97,8 @@ Runs the optional stream audio transcription loop:
 
 - Resolves the configured Twitch stream with Streamlink
 - Pipes audio-only FFmpeg output as 16 kHz mono PCM
-- Sends bounded chunks to local faster-whisper
+- Spools bounded audio chunks so FFmpeg capture is not blocked by Whisper
+- Defers local faster-whisper work while the LLM queue is busy
 - Finalizes streamer speech after a configurable quiet period
 - Stores transcript segments separately from chat messages
 

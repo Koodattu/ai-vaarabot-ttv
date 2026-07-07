@@ -10,6 +10,7 @@ import asyncio
 import os
 import tempfile
 import wave
+from dataclasses import dataclass
 from typing import Awaitable, Callable, Optional
 
 from streamlink.options import Options
@@ -21,6 +22,13 @@ import config
 SAMPLE_RATE = 16000
 BYTES_PER_SAMPLE = 2
 CHANNELS = 1
+
+
+@dataclass
+class AudioChunk:
+    wav_path: str
+    chunk_start: float
+    skip_initial_seconds: float
 
 
 class StreamAudioTranscriber:
@@ -41,12 +49,15 @@ class StreamAudioTranscriber:
 
         self._model = None
         self._task: Optional[asyncio.Task] = None
+        self._transcription_task: Optional[asyncio.Task] = None
         self._stop_event = asyncio.Event()
         self._ffmpeg_process: Optional[asyncio.subprocess.Process] = None
         self._stderr_task: Optional[asyncio.Task] = None
+        self._audio_chunk_queue: Optional[asyncio.Queue[AudioChunk]] = None
         self._audio_offset_seconds = 0.0
         self._last_transcript_text = ""
         self._utterance_callback: Optional[Callable[[str, str], Awaitable[bool]]] = None
+        self._wait_until_llm_idle: Optional[Callable[[], Awaitable[None]]] = None
         self._pending_utterance_parts: list[str] = []
         self._pending_utterance_start: Optional[float] = None
         self._pending_utterance_end: Optional[float] = None
@@ -62,6 +73,10 @@ class StreamAudioTranscriber:
         """Set a callback for finalized streamer speech utterances."""
         self._utterance_callback = callback
 
+    def set_llm_idle_waiter(self, callback: Callable[[], Awaitable[None]]) -> None:
+        """Set a callback used to defer Whisper while the LLM is responding."""
+        self._wait_until_llm_idle = callback
+
     async def start(self) -> tuple[bool, str]:
         """Start the transcription background task."""
         if self.is_running:
@@ -74,7 +89,12 @@ class StreamAudioTranscriber:
             return False, f"Could not start transcription: {exc}"
 
         self._stop_event = asyncio.Event()
+        self._audio_chunk_queue = asyncio.Queue(maxsize=config.TRANSCRIPTION_AUDIO_QUEUE_MAX_SIZE)
         self.last_error = None
+        self._transcription_task = asyncio.create_task(
+            self._transcribe_queued_audio(),
+            name=f"transcribe-worker-{self.channel}"
+        )
         self._task = asyncio.create_task(self._run(), name=f"transcribe-{self.channel}")
         return True, f"Transcription started for #{self.channel}"
 
@@ -96,6 +116,7 @@ class StreamAudioTranscriber:
             except asyncio.CancelledError:
                 pass
 
+        await self._stop_transcription_worker()
         return True, "Transcription stopped"
 
     def status(self) -> str:
@@ -202,12 +223,18 @@ class StreamAudioTranscriber:
         preferred_names = [
             self.stream_quality,
             "audio_only",
-            "worst",
-            "360p",
             "480p",
+            "720p",
+            "720p60",
+            "360p",
+            "worst",
             "best"
         ]
+        seen_names = set()
         for name in preferred_names:
+            if name in seen_names:
+                continue
+            seen_names.add(name)
             stream = streams.get(name)
             if stream:
                 print(f"[Transcription] Using stream quality '{name}'")
@@ -236,38 +263,86 @@ class StreamAudioTranscriber:
                 chunk = bytes(buffer[:chunk_bytes])
                 chunk_start = self._audio_offset_seconds
                 skip_initial = self.overlap_seconds if chunk_start > 0 else 0.0
-                await self._transcribe_pcm_chunk(chunk, chunk_start, skip_initial)
+                await self._spool_pcm_chunk(chunk, chunk_start, skip_initial)
                 del buffer[:step_bytes]
                 self._audio_offset_seconds += step_seconds
 
         if len(buffer) >= minimum_final_bytes and not self._stop_event.is_set():
-            await self._transcribe_pcm_chunk(bytes(buffer), self._audio_offset_seconds, 0.0)
+            await self._spool_pcm_chunk(bytes(buffer), self._audio_offset_seconds, 0.0)
 
-        await self._flush_streamer_utterance(force=True)
-
-    async def _transcribe_pcm_chunk(self, pcm_data: bytes, chunk_start: float, skip_initial_seconds: float) -> None:
-        if not pcm_data:
+    async def _spool_pcm_chunk(self, pcm_data: bytes, chunk_start: float, skip_initial_seconds: float) -> None:
+        if not pcm_data or not self._audio_chunk_queue:
             return
 
         wav_path = self._write_temp_wav(pcm_data)
-        try:
-            segments, info = await asyncio.to_thread(self._transcribe_wav_file, wav_path)
-        finally:
+        chunk = AudioChunk(
+            wav_path=wav_path,
+            chunk_start=chunk_start,
+            skip_initial_seconds=skip_initial_seconds
+        )
+
+        if self._audio_chunk_queue.full():
             try:
-                os.unlink(wav_path)
-            except OSError:
+                dropped = self._audio_chunk_queue.get_nowait()
+                self._audio_chunk_queue.task_done()
+                self._delete_wav_file(dropped.wav_path)
+                print("[Transcription] Dropped oldest queued audio chunk to stay realtime")
+            except asyncio.QueueEmpty:
                 pass
 
+        try:
+            self._audio_chunk_queue.put_nowait(chunk)
+        except asyncio.QueueFull:
+            self._delete_wav_file(wav_path)
+            print("[Transcription] Dropped audio chunk because transcription queue is full")
+
+    async def _transcribe_queued_audio(self) -> None:
+        while not self._stop_event.is_set() or (self._audio_chunk_queue and not self._audio_chunk_queue.empty()):
+            if not self._audio_chunk_queue:
+                await asyncio.sleep(0.2)
+                continue
+
+            try:
+                chunk = await asyncio.wait_for(self._audio_chunk_queue.get(), timeout=0.5)
+            except asyncio.TimeoutError:
+                continue
+
+            try:
+                if (
+                    config.TRANSCRIPTION_PAUSE_WHILE_LLM_BUSY
+                    and self._wait_until_llm_idle
+                    and not self._stop_event.is_set()
+                ):
+                    await self._wait_until_llm_idle()
+
+                await self._transcribe_wav_chunk(chunk)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self.last_error = str(exc)
+                print(f"[Transcription] Error transcribing queued audio: {exc}")
+            finally:
+                self._delete_wav_file(chunk.wav_path)
+                self._audio_chunk_queue.task_done()
+
+        await self._flush_streamer_utterance(force=True)
+
+    async def _transcribe_wav_chunk(self, chunk: AudioChunk) -> None:
+        if not chunk.wav_path:
+            return
+
+        segments, info = await asyncio.to_thread(self._transcribe_wav_file, chunk.wav_path)
+
         for segment in segments:
-            if skip_initial_seconds and segment.end <= skip_initial_seconds:
+            if chunk.skip_initial_seconds and segment.end <= chunk.skip_initial_seconds:
                 continue
 
             text = " ".join(segment.text.split())
             if not text or self._is_duplicate_text(text):
                 continue
 
-            start_offset = chunk_start + float(segment.start)
-            end_offset = chunk_start + float(segment.end)
+            start_offset = chunk.chunk_start + float(segment.start)
+            end_offset = chunk.chunk_start + float(segment.end)
             language = getattr(info, "language", None)
             avg_logprob = getattr(segment, "avg_logprob", None)
             no_speech_prob = getattr(segment, "no_speech_prob", None)
@@ -312,6 +387,12 @@ class StreamAudioTranscriber:
             wav_file.setframerate(SAMPLE_RATE)
             wav_file.writeframes(pcm_data)
         return path
+
+    def _delete_wav_file(self, wav_path: str) -> None:
+        try:
+            os.unlink(wav_path)
+        except OSError:
+            pass
 
     def _is_duplicate_text(self, text: str) -> bool:
         normalized = " ".join(text.lower().split())
@@ -421,3 +502,27 @@ class StreamAudioTranscriber:
             self._stderr_task = None
 
         self._ffmpeg_process = None
+
+    async def _stop_transcription_worker(self) -> None:
+        if not self._transcription_task:
+            return
+
+        try:
+            await asyncio.wait_for(self._transcription_task, timeout=10)
+        except asyncio.TimeoutError:
+            self._transcription_task.cancel()
+            try:
+                await self._transcription_task
+            except asyncio.CancelledError:
+                pass
+
+        self._transcription_task = None
+
+        if self._audio_chunk_queue:
+            while not self._audio_chunk_queue.empty():
+                try:
+                    chunk = self._audio_chunk_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                self._delete_wav_file(chunk.wav_path)
+                self._audio_chunk_queue.task_done()

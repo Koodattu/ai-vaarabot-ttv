@@ -93,11 +93,13 @@ Mention the bot in Twitch chat:
 | `TRANSCRIPTION_MODEL`         | faster-whisper model name                        | `small`           |
 | `TRANSCRIPTION_DEVICE`        | faster-whisper device (`cpu` or `cuda`)          | `cpu`             |
 | `TRANSCRIPTION_COMPUTE_TYPE`  | faster-whisper compute type                      | `int8`            |
-| `TRANSCRIPTION_LANGUAGE`      | Optional language code, blank for auto-detect    | _Optional_        |
-| `TRANSCRIPTION_STREAM_QUALITY` | Stream quality to resolve for audio extraction  | `worst`           |
+| `TRANSCRIPTION_LANGUAGE`      | Optional language code; blank or `auto` auto-detects | _Optional_    |
+| `TRANSCRIPTION_STREAM_QUALITY` | Stream quality to resolve for audio extraction  | `480p`            |
 | `TRANSCRIPTION_CHUNK_SECONDS` | Audio chunk size sent to Whisper                 | `10.0`            |
 | `TRANSCRIPTION_OVERLAP_SECONDS` | Overlap between chunks for cleaner boundaries  | `1.0`             |
 | `TRANSCRIPTION_CONTEXT_LIMIT` | Recent transcript segments added to chat context | `6`               |
+| `TRANSCRIPTION_AUDIO_QUEUE_MAX_SIZE` | Max spooled audio chunks waiting for Whisper | `30`              |
+| `TRANSCRIPTION_PAUSE_WHILE_LLM_BUSY` | Defer Whisper while the LLM is responding    | `true`            |
 | `INPUT_QUEUE_MAX_SIZE`        | Max queued chat/streamer inputs                  | `20`              |
 | `INPUT_QUEUE_MIN_RESPONSE_INTERVAL` | Minimum seconds between bot responses       | `2.0`             |
 | `INPUT_QUEUE_MAX_AGE_SECONDS` | Drop queued inputs older than this               | `180.0`           |
@@ -105,7 +107,7 @@ Mention the bot in Twitch chat:
 | `STREAMER_SPEECH_QUIET_SECONDS` | Quiet gap before streamer speech is finalized  | `4.0`             |
 | `STREAMER_SPEECH_MAX_UTTERANCE_SECONDS` | Force-finalize long streamer utterances | `30.0`            |
 | `STREAMER_SPEECH_MIN_WORDS`   | Ignore shorter streamer utterances               | `5`               |
-| `STREAMER_SPEECH_RESPONSE_COOLDOWN_SECONDS` | Minimum seconds between streamer-triggered queued responses | `45.0` |
+| `STREAMER_SPEECH_RESPONSE_COOLDOWN_SECONDS` | Minimum seconds between streamer-triggered queued responses | `90.0` |
 | `STREAMER_SPEECH_MAX_PENDING` | Max pending streamer inputs in the queue          | `1`               |
 | `GOOGLE_SEARCH_API_KEY`       | Google Custom Search API key                    | _Optional_        |
 | `GOOGLE_SEARCH_ENGINE_ID`     | Google Custom Search Engine ID                  | _Optional_        |
@@ -153,7 +155,8 @@ TRANSCRIPTION_CHANNEL=vaarattu
 7. **Stream Audio Transcription** - When enabled:
    - Uses Streamlink to resolve the configured Twitch channel
    - Runs FFmpeg as an audio-only pipe (`16 kHz`, mono PCM)
-   - Sends short chunks to local faster-whisper with VAD enabled by default
+   - Spools short audio chunks, then sends them to local faster-whisper with VAD enabled by default
+   - Defers Whisper work while the LLM is generating a response
    - Stores transcript segments separately from chat messages
    - Adds only the most recent transcript segments to LLM context
    - Coalesces streamer speech after a quiet gap before treating it as a bot input

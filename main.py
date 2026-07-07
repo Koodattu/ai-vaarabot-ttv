@@ -62,6 +62,7 @@ async def run() -> None:
     input_queue = BotInputQueue(database, rate_limiter, llm_provider)
     transcriber = StreamAudioTranscriber(database)
     transcriber.set_utterance_callback(input_queue.enqueue_streamer_speech)
+    transcriber.set_llm_idle_waiter(input_queue.wait_until_idle)
 
     # Initialize Twitch API
     print("\n🔌 Connecting to Twitch...")

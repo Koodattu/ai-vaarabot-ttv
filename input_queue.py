@@ -51,6 +51,8 @@ class BotInputQueue:
         self._last_response_time = 0.0
         self._last_streamer_enqueue_time = 0.0
         self._pending_streamer_jobs = 0
+        self._idle_event = asyncio.Event()
+        self._idle_event.set()
 
     def set_bot_identity(self, username: str, user_id: str) -> None:
         self._bot_username = username
@@ -87,6 +89,13 @@ class BotInputQueue:
 
     def set_llm_provider(self, llm_provider) -> None:
         self.llm_provider = llm_provider
+
+    @property
+    def is_busy(self) -> bool:
+        return not self._idle_event.is_set()
+
+    async def wait_until_idle(self) -> None:
+        await self._idle_event.wait()
 
     async def enqueue_chat(self, msg, channel: str, user_id: str, user_name: str, message: str, raw_message: str) -> bool:
         item = self._make_item(
@@ -218,17 +227,22 @@ class BotInputQueue:
             await asyncio.sleep(wait_seconds)
 
         print(f"[Input Queue] Processing {item.source} input for #{item.channel}: {item.raw_message[:100]}")
+        self._idle_event.clear()
 
-        game_name = await self._get_game_name(item.channel)
-        response = await self.llm_provider.get_response(
-            item.channel,
-            item.user_id,
-            item.user_name,
-            item.message,
-            self.database,
-            game_name=game_name,
-            msg_callback=lambda text: self._send_intermediate_message(item, text)
-        )
+        try:
+            game_name = await self._get_game_name(item.channel)
+            response = await self.llm_provider.get_response(
+                item.channel,
+                item.user_id,
+                item.user_name,
+                item.message,
+                self.database,
+                game_name=game_name,
+                msg_callback=lambda text: self._send_intermediate_message(item, text),
+                allow_tools=item.source == "chat"
+            )
+        finally:
+            self._idle_event.set()
 
         if len(response) > 480:
             response = response[:477] + "..."
