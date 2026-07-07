@@ -160,6 +160,7 @@ TRANSCRIPTION_CHANNEL=vaarattu
    - Stores transcript segments separately from chat messages
    - Adds only the most recent transcript segments to LLM context
    - Coalesces streamer speech after a quiet gap before treating it as a bot input
+   - Sends streamer-triggered bot replies only when `TRANSCRIPTION_CHANNEL` is also listed in `TARGET_CHANNELS`
    - Can be controlled by broadcaster/mod commands: `!vaarabot transcribe on`, `off`, and `status`
 
 8. **Unified Input Queue** - Chat mentions and finalized streamer speech share one queue:

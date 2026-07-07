@@ -23,7 +23,7 @@ GEMINI_MODEL = "gemini-3-flash-preview"
 GEMINI_SMALLER_MODEL = "gemini-2.5-flash-lite"
 
 # Ollama Configuration
-OLLAMA_MODEL = "gemma4:e4b"#"gemma3-enhanced:27b"
+OLLAMA_MODEL = "gemma4:26b"#"gemma3-enhanced:27b"
 OLLAMA_MODEL_SUPPORTS_VISION = True
 OLLAMA_VISION_MODEL = "qwen3-vl:2b"
 OLLAMA_HOST = 'http://localhost:11434'
@@ -44,6 +44,10 @@ TWITCH_CHANNEL = "vaarattu"  # Channel for screenshots
 TRANSCRIPTION_ENABLED = os.getenv("TRANSCRIPTION_ENABLED", "false").lower() == "true"
 _raw_transcription_channel = os.getenv("TRANSCRIPTION_CHANNEL", "").strip().lower()
 TRANSCRIPTION_CHANNEL = _raw_transcription_channel or (TARGET_CHANNELS[0] if TARGET_CHANNELS else TWITCH_CHANNEL)
+STREAMER_RESPONSE_TARGET_CHANNELS = [
+    channel for channel in TARGET_CHANNELS
+    if channel == TRANSCRIPTION_CHANNEL
+]
 TRANSCRIPTION_MODEL = os.getenv("TRANSCRIPTION_MODEL", "small")
 TRANSCRIPTION_DEVICE = os.getenv("TRANSCRIPTION_DEVICE", "cpu")
 TRANSCRIPTION_COMPUTE_TYPE = os.getenv("TRANSCRIPTION_COMPUTE_TYPE", "int8")
@@ -143,13 +147,17 @@ Rules:
 - Just go straight to the point, do not start explaining things
 - If the user's question is too open ended, ask to be more specific and exact
 - Address users by name when natural
-- Use Twitch or third party emotes to express tone and emotion, do not use emojis
-- You can use common popular twitch slang, memes and especially emotes in your messages
+- Use Twitch or third party emotes to express tone and emotion, do not use Unicode emojis
+- You can use common popular twitch slang, memes and emotes in your messages
 - Twitch emotes can be also from 3rd party sites like BTTV, FFZ and 7TV
 - Remember the emotes need to have spaces around them to be recognized
 - The emotes need to be case sensitive
-- Write emotes as raw chat tokens like PogChamp, Kappa, LUL, or monkaS
+- Write emotes as raw chat tokens like PogChamp, Kappa, LUL, monkaS, KEKW, OMEGALUL, Aware, Clueless, Sadge, PauseChamp, HUH, or peepoHappy
 - Never put emotes in brackets, quotes, parentheses, or markdown; write PogChamp, not [PogChamp]
+- Do not use Unicode emoji like skull, raised eyebrow, laughing, or crying faces; use Twitch-style emotes or plain text instead
+- Do not append emotes automatically. Use 0-1 emotes most of the time, 2 only when it genuinely improves the joke
+- Avoid repeating the same emote or emote combo from recent context. Never default to the same ending like "LUL Kappa"
+- Pick emotes that match the actual tone: LUL/KEKW/OMEGALUL for laughs, Kappa for sarcasm, monkaS/monkaW for tension, PogChamp/Pog/POGGERS for hype, Aware/Clueless/HUH for confusion, Sadge for mild sadness
 - Match the user's energy
 - Detect and respond in the language of the CURRENT MESSAGE content
 - If the current message or stream transcript is Finnish, respond in Finnish

@@ -132,6 +132,14 @@ class BotInputQueue:
         if not config.STREAMER_SPEECH_RESPONSES_ENABLED:
             return False
 
+        channel = channel.lower()
+        if channel not in config.STREAMER_RESPONSE_TARGET_CHANNELS:
+            print(
+                f"[Input Queue] Not queueing streamer speech for #{channel}; "
+                "TRANSCRIPTION_CHANNEL is not in TARGET_CHANNELS"
+            )
+            return False
+
         now = time.monotonic()
         if now - self._last_streamer_enqueue_time < config.STREAMER_SPEECH_RESPONSE_COOLDOWN_SECONDS:
             print("[Input Queue] Dropping streamer speech during cooldown")
