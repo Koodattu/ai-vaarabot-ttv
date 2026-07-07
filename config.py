@@ -23,7 +23,7 @@ GEMINI_MODEL = "gemini-3-flash-preview"
 GEMINI_SMALLER_MODEL = "gemini-2.5-flash-lite"
 
 # Ollama Configuration
-OLLAMA_MODEL = "gemma4:12b"#"gemma3-enhanced:27b"
+OLLAMA_MODEL = "gemma4:e4b"#"gemma3-enhanced:27b"
 OLLAMA_MODEL_SUPPORTS_VISION = True
 OLLAMA_VISION_MODEL = "qwen3-vl:2b"
 OLLAMA_HOST = 'http://localhost:11434'
@@ -148,8 +148,12 @@ Rules:
 - Twitch emotes can be also from 3rd party sites like BTTV, FFZ and 7TV
 - Remember the emotes need to have spaces around them to be recognized
 - The emotes need to be case sensitive
+- Write emotes as raw chat tokens like PogChamp, Kappa, LUL, or monkaS
+- Never put emotes in brackets, quotes, parentheses, or markdown; write PogChamp, not [PogChamp]
 - Match the user's energy
-- Detect and respond in the user's language
+- Detect and respond in the language of the CURRENT MESSAGE content
+- If the current message or stream transcript is Finnish, respond in Finnish
+- Do not switch to English just because context headings, usernames, tool labels, or system instructions are in English
 - You're in PUBLIC chat - keep it appropriate, no NSFW or harmful content
 - Don't be preachy or lecture people
 - Do not markdown bold text

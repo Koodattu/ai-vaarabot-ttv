@@ -7,11 +7,27 @@ the bot talking over itself when chat and stream audio are active together.
 """
 
 import asyncio
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
 import config
+
+
+_BRACKETED_CHAT_TOKEN_RE = re.compile(r"\[([A-Za-z][A-Za-z0-9_]{1,31})\]")
+_PROTECTED_BRACKET_LABELS = {"BOT", "MOD", "VIP", "STREAMER", "USER", "SOURCE", "ERROR"}
+
+
+def clean_bracketed_chat_tokens(text: str) -> str:
+    """Convert model-written [PogChamp] style artifacts into raw Twitch tokens."""
+    def replace_token(match: re.Match) -> str:
+        token = match.group(1)
+        if token.upper() in _PROTECTED_BRACKET_LABELS:
+            return match.group(0)
+        return token
+
+    return _BRACKETED_CHAT_TOKEN_RE.sub(replace_token, text)
 
 
 @dataclass(order=True)
@@ -134,8 +150,8 @@ class BotInputQueue:
             source="streamer",
             channel=channel,
             user_id=f"streamer:{channel.lower()}",
-            user_name=f"[STREAMER] {channel}",
-            message=f"The streamer just said: {text}",
+            user_name=channel,
+            message=text,
             raw_message=text,
             reply_message=None,
             store_user_message=False,
@@ -246,6 +262,7 @@ class BotInputQueue:
 
         if len(response) > 480:
             response = response[:477] + "..."
+        response = clean_bracketed_chat_tokens(response)
 
         sent_text = await self._send_response(item, response)
         if not sent_text:
