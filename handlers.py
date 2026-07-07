@@ -12,10 +12,12 @@ from config import TARGET_CHANNELS, MAX_MESSAGES_PER_HOUR
 class ChatHandlers:
     """Manages Twitch chat event handlers."""
 
-    def __init__(self, database, rate_limiter, llm_provider):
+    def __init__(self, database, rate_limiter, llm_provider, input_queue, transcriber=None):
         self.database = database
         self.rate_limiter = rate_limiter
         self.llm_provider = llm_provider
+        self.input_queue = input_queue
+        self.transcriber = transcriber
 
         # Bot info (set after login)
         self.bot_username: str = ""
@@ -31,6 +33,9 @@ class ChatHandlers:
         async for user in users:
             self.bot_username = user.login.lower()
             self.bot_user_id = user.id
+            self.input_queue.set_bot_identity(self.bot_username, self.bot_user_id)
+            self.input_queue.set_chat(ready_event.chat)
+            self.input_queue.start()
             print(f"  Bot username: {user.display_name}")
             print(f"  Listening for @{self.bot_username} mentions")
 
@@ -131,62 +136,31 @@ class ChatHandlers:
 
         print(f"\n[{channel}] {formatted_user_name}: {message_text}")
 
-        # Create callback for sending intermediate messages (e.g., ad notifications)
-        async def send_chat_message(text: str):
-            """Send a reply message to the chat."""
+        queued = await self.input_queue.enqueue_chat(
+            msg=msg,
+            channel=channel,
+            user_id=user_id,
+            user_name=formatted_user_name,
+            message=clean_message,
+            raw_message=message_text
+        )
+        if not queued:
+            self.database.store_message(channel, user_id, formatted_user_name, message_text, is_bot=False)
             try:
-                await msg.reply(text)
+                await msg.reply("I'm a little backed up rn NotLikeThis")
             except Exception as e:
-                print(f"[Callback] Error sending reply: {e}")
-                # Fallback to regular message
-                try:
-                    await msg.chat.send_message(msg.room.name, f"@{user_name} {text}")
-                except Exception as e2:
-                    print(f"[Callback] Error sending message: {e2}")
+                print(f"Error sending queue full message: {e}")
+            return
 
-        # Get current game name from Twitch API
-        game_name = None
-        try:
-            from twitch_api import check_stream_status
-            stream_status = await check_stream_status(channel)
-            if stream_status["is_live"] and stream_status.get("stream_info"):
-                game_name = stream_status["stream_info"].get("game_name")
-                if game_name:
-                    print(f"[Game] Current game: {game_name}")
-        except Exception as e:
-            print(f"[Game] Failed to get game name: {e}")
-
-        # Get response from LLM (channel-scoped context) - BEFORE storing current message
-        response = await self.llm_provider.get_response(channel, user_id, formatted_user_name, clean_message, self.database, game_name=game_name, msg_callback=send_chat_message)
-
-        # Now store the user's message (after context was built without it)
-        self.database.store_message(channel, user_id, formatted_user_name, message_text, is_bot=False)
-
-        # Truncate if too long for Twitch (500 char limit)
-        if len(response) > 480:
-            response = response[:477] + "..."
-
-        print(f"[Bot] -> {response}")
-
-        # Send reply
-        try:
-            await msg.reply(response)
-            # Store bot response in database
-            self.database.store_message(channel, self.bot_user_id, self.bot_username, response, is_bot=True)
-            self.rate_limiter.update_user_cooldown(user_id)
-        except Exception as e:
-            print(f"Error sending reply: {e}")
-            # Try sending as regular message
-            try:
-                await msg.chat.send_message(msg.room.name, f"@{user_name} {response}")
-                self.database.store_message(channel, self.bot_user_id, self.bot_username, f"@{user_name} {response}", is_bot=True)
-                self.rate_limiter.update_user_cooldown(user_id)
-            except Exception as e2:
-                print(f"Error sending message: {e2}")
+        self.rate_limiter.update_user_cooldown(user_id)
 
     async def _handle_mode_commands(self, msg: ChatMessage, message_text: str, user_name: str) -> bool:
         """Handle !vaarabot mode commands. Returns True if a command was handled."""
         message_lower = message_text.lower()
+
+        if message_lower == "!vaarabot transcribe" or message_lower.startswith("!vaarabot transcribe "):
+            await self._handle_transcription_command(msg, message_lower)
+            return True
 
         if message_lower == "!vaarabot mode local":
             from llm import OllamaLLM
@@ -198,6 +172,7 @@ class ChatHandlers:
             new_llm = OllamaLLM()
             if new_llm.test_connection():
                 self.llm_provider = new_llm
+                self.input_queue.set_llm_provider(new_llm)
                 await msg.reply("Switched to local mode (Ollama) SeemsGood")
                 print("[Mode] Switched to Ollama")
             else:
@@ -214,6 +189,7 @@ class ChatHandlers:
             new_llm = GeminiLLM()
             if new_llm.test_connection():
                 self.llm_provider = new_llm
+                self.input_queue.set_llm_provider(new_llm)
                 await msg.reply("Switched to cloud mode (Gemini) SeemsGood")
                 print("[Mode] Switched to Gemini")
             else:
@@ -221,3 +197,46 @@ class ChatHandlers:
             return True
 
         return False
+
+    async def _handle_transcription_command(self, msg: ChatMessage, message_lower: str) -> None:
+        """Handle stream audio transcription controls."""
+        if not self.transcriber:
+            await msg.reply("Stream audio transcription is not available")
+            return
+
+        parts = message_lower.split()
+        action = parts[2] if len(parts) >= 3 else "status"
+
+        if action == "status":
+            await msg.reply(self.transcriber.status())
+            return
+
+        if action in ("on", "start"):
+            if not self._can_manage_transcription(msg):
+                await msg.reply("Mods only for transcription controls")
+                return
+
+            success, reply = await self.transcriber.start()
+            if not success:
+                reply = f"{reply} NotLikeThis"
+            await msg.reply(reply)
+            return
+
+        if action in ("off", "stop"):
+            if not self._can_manage_transcription(msg):
+                await msg.reply("Mods only for transcription controls")
+                return
+
+            success, reply = await self.transcriber.stop()
+            await msg.reply(reply)
+            return
+
+        await msg.reply("Use: !vaarabot transcribe on/off/status")
+
+    def _can_manage_transcription(self, msg: ChatMessage) -> bool:
+        """Allow broadcaster and moderators to start or stop transcription."""
+        badges = msg.user.badges if isinstance(msg.user.badges, dict) else {}
+        room_name = getattr(msg.room, "name", "").lower()
+        user_name = getattr(msg.user, "name", "").lower()
+        is_broadcaster = bool(badges.get("broadcaster")) or (room_name and user_name == room_name)
+        return bool(msg.user.mod or is_broadcaster)

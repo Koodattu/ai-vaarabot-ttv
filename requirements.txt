@@ -10,3 +10,4 @@ cloudscraper
 pytesseract
 Pillow
 ddgs
+faster-whisper

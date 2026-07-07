@@ -17,6 +17,8 @@ from rate_limit import RateLimiter
 from tools import init_screenshots_dir
 from llm import GeminiLLM, OllamaLLM
 from handlers import ChatHandlers
+from input_queue import BotInputQueue
+from transcription import StreamAudioTranscriber
 
 async def run() -> None:
     """Main bot entry point."""
@@ -57,6 +59,9 @@ async def run() -> None:
 
     # Initialize rate limiter
     rate_limiter = RateLimiter()
+    input_queue = BotInputQueue(database, rate_limiter, llm_provider)
+    transcriber = StreamAudioTranscriber(database)
+    transcriber.set_utterance_callback(input_queue.enqueue_streamer_speech)
 
     # Initialize Twitch API
     print("\n🔌 Connecting to Twitch...")
@@ -80,7 +85,7 @@ async def run() -> None:
     chat = await Chat(twitch)
 
     # Create handlers with dependencies
-    handlers = ChatHandlers(database, rate_limiter, llm_provider)
+    handlers = ChatHandlers(database, rate_limiter, llm_provider, input_queue, transcriber)
 
     # Register event handlers
     chat.register_event(ChatEvent.READY, handlers.on_ready)
@@ -88,6 +93,12 @@ async def run() -> None:
 
     # Start the bot
     chat.start()
+
+    if config.TRANSCRIPTION_ENABLED:
+        success, message = await transcriber.start()
+        print(f"[Transcription] {message}")
+        if not success:
+            print("[Transcription] Bot will continue without stream audio transcription")
 
     print("\n" + "=" * 50)
     print("  Bot is running! Press Ctrl+C to stop")
@@ -100,6 +111,8 @@ async def run() -> None:
     except KeyboardInterrupt:
         print("\n\nShutting down...")
     finally:
+        await transcriber.stop()
+        await input_queue.stop()
         chat.stop()
         await twitch.close()
         database.close()

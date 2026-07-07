@@ -13,7 +13,9 @@ ai-vaarabot-ttv/
 ├── auth.py              # Twitch OAuth & token management
 ├── database.py          # SQLite + ChromaDB operations
 ├── rate_limit.py        # Cooldown & rate limiting
+├── input_queue.py       # Serialized chat/streamer input processing
 ├── tools.py             # Tool functions (screenshot, search)
+├── transcription.py     # Optional stream audio transcription
 ├── handlers.py          # Chat event handlers
 └── llm/
     ├── __init__.py
@@ -68,6 +70,17 @@ Manages anti-spam mechanisms:
 
 **Why separate?** Rate limiting is a distinct concern that could be extended with more sophisticated algorithms or Redis-based distributed rate limiting.
 
+### `input_queue.py`
+
+Serializes bot response work:
+
+- Accepts chat mentions and finalized streamer speech
+- Prioritizes explicit chat inputs over passive stream audio
+- Processes one LLM/tool response at a time
+- Drops stale or excessive streamer inputs to avoid spam
+
+**Why separate?** Chat handlers should stay responsive and the transcriber should not call the LLM directly. A single queue gives both sources a shared ordering and backpressure point.
+
 ### `tools.py`
 
 Contains bot tool functions:
@@ -77,6 +90,18 @@ Contains bot tool functions:
 - Tool declarations for LLMs
 
 **Why separate?** Tools are independent capabilities. This structure makes it trivial to add new tools (weather, games, database queries) without touching other code.
+
+### `transcription.py`
+
+Runs the optional stream audio transcription loop:
+
+- Resolves the configured Twitch stream with Streamlink
+- Pipes audio-only FFmpeg output as 16 kHz mono PCM
+- Sends bounded chunks to local faster-whisper
+- Finalizes streamer speech after a configurable quiet period
+- Stores transcript segments separately from chat messages
+
+**Why separate?** Live audio transcription has its own lifecycle, subprocess management, reconnect behavior, and model loading. Keeping it out of chat handlers avoids blocking chat responses and keeps shutdown cleanup explicit.
 
 ### `llm/` Module
 

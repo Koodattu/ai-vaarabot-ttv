@@ -68,7 +68,7 @@ class OllamaLLM(BaseLLM):
             tool_results = await self._detect_and_execute_tools(full_prompt, user_prompt, channel, message, msg_callback)
 
             # STEP 2: Use model to generate final response with restructured messages
-            final_response = self._generate_final_response(context_message, user_prompt, tool_results)
+            final_response = self._generate_final_response(channel, context_message, user_prompt, tool_results)
 
             return final_response
 
@@ -605,10 +605,11 @@ Reply with JSON in this format:
                 print(f"[DEBUG] Full traceback:\n{traceback.format_exc()}")
             return {'has_content': False, 'content': ''}
 
-    def _generate_final_response(self, context_message: str, user_prompt: str, tool_results: dict) -> str:
+    def _generate_final_response(self, channel: str, context_message: str, user_prompt: str, tool_results: dict) -> str:
         """Use model to generate final response with tool results.
 
         Args:
+            channel: Twitch channel name
             context_message: The context from chat history (empty string if no context)
             user_prompt: The current user message
             tool_results: Dict containing screenshot_data, search_results, and screenshot_error
@@ -619,7 +620,11 @@ Reply with JSON in this format:
         # Format system prompt with current date/time
         from datetime import datetime
         current_datetime = datetime.now().strftime("%B %d, %Y at %I:%M %p")
-        system_instruction = SYSTEM_PROMPT.format(current_datetime=current_datetime)
+        channel_name = channel.lstrip("#").strip() or "this channel"
+        system_instruction = SYSTEM_PROMPT.format(
+            current_datetime=current_datetime,
+            channel_name=channel_name
+        )
 
         # Build user message combining context and current prompt
         if context_message:

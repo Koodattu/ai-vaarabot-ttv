@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # LLM Provider Configuration
-USE_OLLAMA = False  # Set to True to use Ollama locally, False for Gemini API
+USE_OLLAMA = True  # Set to True to use Ollama locally, False for Gemini API
 
 # Twitch API Configuration
 TWITCH_APP_ID = os.getenv("TWITCH_APP_ID")
@@ -23,7 +23,7 @@ GEMINI_MODEL = "gemini-3-flash-preview"
 GEMINI_SMALLER_MODEL = "gemini-2.5-flash-lite"
 
 # Ollama Configuration
-OLLAMA_MODEL = "gemma3-tools:27b"#"gemma3-enhanced:27b"
+OLLAMA_MODEL = "gemma4:12b"#"gemma3-enhanced:27b"
 OLLAMA_MODEL_SUPPORTS_VISION = True
 OLLAMA_VISION_MODEL = "qwen3-vl:2b"
 OLLAMA_HOST = 'http://127.0.0.1:11434'
@@ -39,6 +39,32 @@ STREAMLINK_OAUTH_TOKEN = os.getenv("STREAMLINK_OAUTH_TOKEN")
 _raw_channels = os.getenv("TARGET_CHANNELS", "").strip()
 TARGET_CHANNELS = [ch.strip().lower() for ch in _raw_channels.split(",") if ch.strip()] if _raw_channels else []
 TWITCH_CHANNEL = "vaarattu"  # Channel for screenshots
+
+# Stream Audio Transcription Configuration
+TRANSCRIPTION_ENABLED = os.getenv("TRANSCRIPTION_ENABLED", "false").lower() == "true"
+_raw_transcription_channel = os.getenv("TRANSCRIPTION_CHANNEL", "").strip().lower()
+TRANSCRIPTION_CHANNEL = _raw_transcription_channel or (TARGET_CHANNELS[0] if TARGET_CHANNELS else TWITCH_CHANNEL)
+TRANSCRIPTION_MODEL = os.getenv("TRANSCRIPTION_MODEL", "small")
+TRANSCRIPTION_DEVICE = os.getenv("TRANSCRIPTION_DEVICE", "cpu")
+TRANSCRIPTION_COMPUTE_TYPE = os.getenv("TRANSCRIPTION_COMPUTE_TYPE", "int8")
+TRANSCRIPTION_LANGUAGE = os.getenv("TRANSCRIPTION_LANGUAGE", "").strip() or None
+TRANSCRIPTION_STREAM_QUALITY = os.getenv("TRANSCRIPTION_STREAM_QUALITY", "worst").strip() or "worst"
+TRANSCRIPTION_CHUNK_SECONDS = float(os.getenv("TRANSCRIPTION_CHUNK_SECONDS", "10.0"))
+TRANSCRIPTION_OVERLAP_SECONDS = float(os.getenv("TRANSCRIPTION_OVERLAP_SECONDS", "1.0"))
+TRANSCRIPTION_RECONNECT_DELAY = float(os.getenv("TRANSCRIPTION_RECONNECT_DELAY", "15.0"))
+TRANSCRIPTION_VAD_FILTER = os.getenv("TRANSCRIPTION_VAD_FILTER", "true").lower() == "true"
+TRANSCRIPTION_CONTEXT_LIMIT = int(os.getenv("TRANSCRIPTION_CONTEXT_LIMIT", "6"))
+
+# Unified Input Queue Configuration
+INPUT_QUEUE_MAX_SIZE = int(os.getenv("INPUT_QUEUE_MAX_SIZE", "20"))
+INPUT_QUEUE_MIN_RESPONSE_INTERVAL = float(os.getenv("INPUT_QUEUE_MIN_RESPONSE_INTERVAL", "2.0"))
+INPUT_QUEUE_MAX_AGE_SECONDS = float(os.getenv("INPUT_QUEUE_MAX_AGE_SECONDS", "180.0"))
+STREAMER_SPEECH_RESPONSES_ENABLED = os.getenv("STREAMER_SPEECH_RESPONSES_ENABLED", "true").lower() == "true"
+STREAMER_SPEECH_QUIET_SECONDS = float(os.getenv("STREAMER_SPEECH_QUIET_SECONDS", "4.0"))
+STREAMER_SPEECH_MAX_UTTERANCE_SECONDS = float(os.getenv("STREAMER_SPEECH_MAX_UTTERANCE_SECONDS", "30.0"))
+STREAMER_SPEECH_MIN_WORDS = int(os.getenv("STREAMER_SPEECH_MIN_WORDS", "5"))
+STREAMER_SPEECH_RESPONSE_COOLDOWN_SECONDS = float(os.getenv("STREAMER_SPEECH_RESPONSE_COOLDOWN_SECONDS", "45.0"))
+STREAMER_SPEECH_MAX_PENDING = int(os.getenv("STREAMER_SPEECH_MAX_PENDING", "1"))
 
 # Rate Limiting Configuration
 USER_TIMEOUT_SECONDS = float(os.getenv("USER_TIMEOUT_SECONDS", "1"))
@@ -88,9 +114,10 @@ USER_SCOPES = [
 ]
 
 # System Prompt for LLM (Full personality for final response)
-SYSTEM_PROMPT = """You are Vaarattu's witty Twitch chat bot. You live in Vaarattu's stream chat.
+SYSTEM_PROMPT = """You are {channel_name}'s witty Twitch chat bot. You live in #{channel_name} stream chat.
 
 Current date and time: {current_datetime}
+Current Twitch channel: #{channel_name}
 
 Personality:
 - Playful, satirical, and fun - you enjoy banter and clever humor

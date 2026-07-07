@@ -15,6 +15,7 @@ A witty Twitch chat bot powered by Google Gemini AI. Responds when mentioned wit
 - **🔐 OAuth flow** - Automatic token management with refresh support
 - **📸 Screenshot capture** - Can capture Twitch stream screenshots with ffmpeg/streamlink
 - **🎬 Ad detection** - Automatically detects and waits for pre-roll ads to complete
+- **🎙️ Stream transcription** - Optionally transcribes live stream audio locally with faster-whisper
 - **🔍 Web search** - Can search the web for current information
 - **🌐 Website scraping** - Can scrape and read website content
 
@@ -87,6 +88,25 @@ Mention the bot in Twitch chat:
 | `AD_DETECTION_CHECK_INTERVAL` | How often to check for ads (seconds)            | `5.0`             |
 | `AD_DETECTION_MAX_WAIT`       | Maximum time to wait for ads (seconds)          | `30.0`            |
 | `STREAMLINK_OAUTH_TOKEN`      | Streamlink OAuth token for ad-free streams      | _Optional_        |
+| `TRANSCRIPTION_ENABLED`       | Enable local stream audio transcription          | `false`           |
+| `TRANSCRIPTION_CHANNEL`       | Twitch channel to transcribe                     | First target channel |
+| `TRANSCRIPTION_MODEL`         | faster-whisper model name                        | `small`           |
+| `TRANSCRIPTION_DEVICE`        | faster-whisper device (`cpu` or `cuda`)          | `cpu`             |
+| `TRANSCRIPTION_COMPUTE_TYPE`  | faster-whisper compute type                      | `int8`            |
+| `TRANSCRIPTION_LANGUAGE`      | Optional language code, blank for auto-detect    | _Optional_        |
+| `TRANSCRIPTION_STREAM_QUALITY` | Stream quality to resolve for audio extraction  | `worst`           |
+| `TRANSCRIPTION_CHUNK_SECONDS` | Audio chunk size sent to Whisper                 | `10.0`            |
+| `TRANSCRIPTION_OVERLAP_SECONDS` | Overlap between chunks for cleaner boundaries  | `1.0`             |
+| `TRANSCRIPTION_CONTEXT_LIMIT` | Recent transcript segments added to chat context | `6`               |
+| `INPUT_QUEUE_MAX_SIZE`        | Max queued chat/streamer inputs                  | `20`              |
+| `INPUT_QUEUE_MIN_RESPONSE_INTERVAL` | Minimum seconds between bot responses       | `2.0`             |
+| `INPUT_QUEUE_MAX_AGE_SECONDS` | Drop queued inputs older than this               | `180.0`           |
+| `STREAMER_SPEECH_RESPONSES_ENABLED` | Let streamer speech enqueue bot responses   | `true`            |
+| `STREAMER_SPEECH_QUIET_SECONDS` | Quiet gap before streamer speech is finalized  | `4.0`             |
+| `STREAMER_SPEECH_MAX_UTTERANCE_SECONDS` | Force-finalize long streamer utterances | `30.0`            |
+| `STREAMER_SPEECH_MIN_WORDS`   | Ignore shorter streamer utterances               | `5`               |
+| `STREAMER_SPEECH_RESPONSE_COOLDOWN_SECONDS` | Minimum seconds between streamer-triggered queued responses | `45.0` |
+| `STREAMER_SPEECH_MAX_PENDING` | Max pending streamer inputs in the queue          | `1`               |
 | `GOOGLE_SEARCH_API_KEY`       | Google Custom Search API key                    | _Optional_        |
 | `GOOGLE_SEARCH_ENGINE_ID`     | Google Custom Search Engine ID                  | _Optional_        |
 
@@ -99,6 +119,8 @@ GEMINI_API_KEY=AIza...
 TARGET_CHANNELS=vaarattu,somechannel
 USER_TIMEOUT_SECONDS=5
 MAX_MESSAGES_PER_HOUR=10
+TRANSCRIPTION_ENABLED=false
+TRANSCRIPTION_CHANNEL=vaarattu
 ```
 
 ## 🔧 How It Works
@@ -128,12 +150,30 @@ MAX_MESSAGES_PER_HOUR=10
    - Falls back gracefully if timeout is reached
    - Can be disabled via `AD_DETECTION_ENABLED=false`
 
+7. **Stream Audio Transcription** - When enabled:
+   - Uses Streamlink to resolve the configured Twitch channel
+   - Runs FFmpeg as an audio-only pipe (`16 kHz`, mono PCM)
+   - Sends short chunks to local faster-whisper with VAD enabled by default
+   - Stores transcript segments separately from chat messages
+   - Adds only the most recent transcript segments to LLM context
+   - Coalesces streamer speech after a quiet gap before treating it as a bot input
+   - Can be controlled by broadcaster/mod commands: `!vaarabot transcribe on`, `off`, and `status`
+
+8. **Unified Input Queue** - Chat mentions and finalized streamer speech share one queue:
+   - The bot processes one input at a time
+   - Chat mentions are prioritized over streamer speech
+   - Streamer speech has a cooldown and max-pending limit to avoid spam
+   - Old queued inputs are dropped instead of generating stale replies
+
+Note: Twitch stream audio is usually mixed audio. VAD detects speech, but it cannot reliably separate the streamer from game dialogue, teammates, videos, ads, or other speech unless the stream provides an isolated mic/source.
+
 ## 📦 System Requirements
 
 ### Required Tools
 
 - **Python 3.8+** - Python runtime
 - **FFmpeg** - For screenshot capture ([download](https://ffmpeg.org/download.html))
+  - Also required for optional stream audio transcription
 - **Tesseract OCR** - For ad text detection ([download](https://github.com/tesseract-ocr/tesseract))
   - Windows: Download installer from [UB Mannheim](https://github.com/UB-Mannheim/tesseract/wiki)
   - macOS: `brew install tesseract`
@@ -146,6 +186,7 @@ All Python packages are listed in `requirements.txt`. Key dependencies:
 - `twitchAPI` - Twitch chat connection
 - `google-genai` - Gemini AI integration
 - `streamlink` - Stream URL extraction
+- `faster-whisper` - Local stream audio transcription
 - `pytesseract` - OCR for ad detection
 - `Pillow` - Image processing
 

@@ -72,7 +72,7 @@ class GeminiLLM(BaseLLM):
             tool_results = await self._detect_and_execute_tools(full_prompt, user_prompt, channel, message, msg_callback)
 
             # STEP 2: Use larger model to generate final response with restructured messages
-            final_response = self._generate_final_response(context_message, user_prompt, tool_results)
+            final_response = self._generate_final_response(channel, context_message, user_prompt, tool_results)
 
             return final_response
 
@@ -624,10 +624,11 @@ Extract only the most relevant information that answers the user's question. Be 
             print(f"[Gemini] Error extracting content: {e}")
             return None
 
-    def _generate_final_response(self, context_message: str, user_prompt: str, tool_results: dict) -> str:
+    def _generate_final_response(self, channel: str, context_message: str, user_prompt: str, tool_results: dict) -> str:
         """Use larger model to generate final response with tool results.
 
         Args:
+            channel: Twitch channel name
             context_message: The context from chat history (empty string if no context)
             user_prompt: The current user message
             tool_results: Dict containing screenshot_data, search_results, and screenshot_error
@@ -640,7 +641,11 @@ Extract only the most relevant information that answers the user's question. Be 
         # Start with system instruction with current date/time
         from datetime import datetime
         current_datetime = datetime.now().strftime("%B %d, %Y at %I:%M %p")
-        system_instruction = SYSTEM_PROMPT.format(current_datetime=current_datetime)
+        channel_name = channel.lstrip("#").strip() or "this channel"
+        system_instruction = SYSTEM_PROMPT.format(
+            current_datetime=current_datetime,
+            channel_name=channel_name
+        )
 
         # Build single user message combining context and current prompt
         message_parts = []

@@ -9,7 +9,7 @@ from pathlib import Path
 import chromadb
 from chromadb.config import Settings
 
-from config import DB_PATH, CHROMA_PATH, RAG_RESULTS_COUNT, RECENT_CHAT_COUNT, RECENT_USER_COUNT, RECENT_BOT_COUNT
+from config import DB_PATH, CHROMA_PATH, RAG_RESULTS_COUNT, RECENT_CHAT_COUNT, RECENT_USER_COUNT, RECENT_BOT_COUNT, TRANSCRIPTION_CONTEXT_LIMIT
 
 
 class Database:
@@ -43,6 +43,20 @@ class Database:
         self.db_conn.execute("CREATE INDEX IF NOT EXISTS idx_is_bot ON messages(is_bot)")
         self.db_conn.execute("CREATE INDEX IF NOT EXISTS idx_channel ON messages(channel)")
         self.db_conn.execute("CREATE INDEX IF NOT EXISTS idx_channel_timestamp ON messages(channel, timestamp)")
+        self.db_conn.execute("""
+            CREATE TABLE IF NOT EXISTS transcripts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp REAL NOT NULL,
+                channel TEXT NOT NULL,
+                start_offset REAL,
+                end_offset REAL,
+                text TEXT NOT NULL,
+                language TEXT,
+                avg_logprob REAL,
+                no_speech_prob REAL
+            )
+        """)
+        self.db_conn.execute("CREATE INDEX IF NOT EXISTS idx_transcripts_channel_timestamp ON transcripts(channel, timestamp)")
         self.db_conn.commit()
         print(f"✓ SQLite database initialized: {DB_PATH}")
 
@@ -83,6 +97,62 @@ class Database:
         )
 
         return msg_id
+
+    def store_transcript(
+        self,
+        channel: str,
+        text: str,
+        start_offset: float = None,
+        end_offset: float = None,
+        language: str = None,
+        avg_logprob: float = None,
+        no_speech_prob: float = None
+    ) -> int:
+        """Store a stream audio transcript segment. Returns the transcript ID."""
+        timestamp = time.time()
+        channel = channel.lower()
+        text = text.strip()
+
+        if not text:
+            return -1
+
+        cursor = self.db_conn.execute(
+            """
+            INSERT INTO transcripts (
+                timestamp, channel, start_offset, end_offset, text, language, avg_logprob, no_speech_prob
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (timestamp, channel, start_offset, end_offset, text, language, avg_logprob, no_speech_prob)
+        )
+        self.db_conn.commit()
+        return cursor.lastrowid
+
+    def get_recent_transcripts(self, channel: str, limit: int = TRANSCRIPTION_CONTEXT_LIMIT) -> list[dict]:
+        """Get recent stream audio transcript segments for a channel."""
+        if limit <= 0:
+            return []
+
+        cursor = self.db_conn.execute(
+            """
+            SELECT timestamp, start_offset, end_offset, text, language
+            FROM transcripts
+            WHERE channel = ?
+            ORDER BY timestamp DESC
+            LIMIT ?
+            """,
+            (channel.lower(), limit)
+        )
+        rows = cursor.fetchall()
+        return [
+            {
+                "timestamp": row[0],
+                "start_offset": row[1],
+                "end_offset": row[2],
+                "text": row[3],
+                "language": row[4]
+            }
+            for row in reversed(rows)
+        ]
 
     def get_recent_chat_messages(self, channel: str, limit: int = RECENT_CHAT_COUNT, exclude_user_id: str = None, exclude_bot: bool = False) -> list[dict]:
         """
@@ -196,6 +266,18 @@ class Database:
         # Add game name if provided
         if game_name:
             context_parts.append(f"=== CURRENT GAME ===\n{game_name}")
+
+        # Recent stream audio transcript, if any has been captured for this channel.
+        recent_transcripts = self.get_recent_transcripts(channel, limit=TRANSCRIPTION_CONTEXT_LIMIT)
+        if recent_transcripts:
+            transcript_lines = []
+            for transcript in recent_transcripts:
+                offset = transcript.get("start_offset")
+                if offset is None:
+                    transcript_lines.append(transcript["text"])
+                else:
+                    transcript_lines.append(f"[stream +{offset:.0f}s] {transcript['text']}")
+            context_parts.append("=== RECENT STREAM AUDIO TRANSCRIPT ===\n" + "\n".join(transcript_lines))
 
         # 1. Recent messages from THIS specific user (SQLite)
         recent_user = self.get_recent_user_messages(channel, user_id, limit=RECENT_USER_COUNT)
